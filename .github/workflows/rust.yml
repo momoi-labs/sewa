@@ -16,6 +16,23 @@ jobs:
   check:
     name: Format, lint, and test
     runs-on: ubuntu-latest
+    # The controller's tests need PostgreSQL, at the address mise.toml gives.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: sewa
+          POSTGRES_PASSWORD: sewa
+          POSTGRES_DB: sewa
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U sewa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://sewa:sewa@127.0.0.1:55441/sewa
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2

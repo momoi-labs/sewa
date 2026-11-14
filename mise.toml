@@ -1,2 +1,9 @@
 [tools]
 rust = "1.98"
+# Build sewa-agent for the install script (dev/agent-files.sh).
+zig = "0.15.2"
+"cargo:cargo-zigbuild" = "0.23.0"
+
+[env]
+# The PostgreSQL of compose.yml, for the controller's tests.
+DATABASE_URL = "postgres://sewa:sewa@127.0.0.1:55441/sewa"
