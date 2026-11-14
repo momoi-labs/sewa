@@ -91,11 +91,15 @@ Returns one host, in the same shape as an item of `GET /api/hosts`.
 
 ### `GET /api/hosts/{id}/events`
 
-Returns the host's events, newest first, at most 100:
+Returns the host's events, newest first by `at`, at most 100:
 
 ```json
 [{ "id": 3, "kind": "host.connected", "at": "…", "data": {} }]
 ```
+
+`at` is when the event happened. For a report the agent kept while it was
+offline, that is the agent's time, and `data.received_at` says when the
+controller got it.
 
 ### `GET /api/hosts/{id}/state`
 
@@ -111,8 +115,8 @@ Returns the host's desired state and what its agent last found:
   "config": "# Rendered by the sewa controller. Do not edit.\n…",
   "health": "drift",
   "drift": { "status": "drift", "config_hash": "…", "plan_hash": "…", "exit_code": 2,
-             "plan": {}, "error": null, "reported_at": "…", "stale": false,
-             "ignored": false, "revert_change": null },
+             "plan": {}, "error": null, "reported_at": "…", "received_at": null,
+             "stale": false, "ignored": false, "revert_change": null },
   "undeclared": { "manager": "pacman", "packages": ["htop"], "ignored_count": 0,
                   "explicit_count": 120, "reported_at": "…" }
 }
@@ -124,7 +128,9 @@ Returns the host's desired state and what its agent last found:
   `in_sync` (exit code 0), `drift` (2), or `error` (1). `stale` is true
   when the plan is of an older config. `ignored` is true when Ignore hid
   this drift plan. `revert_change` is the host's open revert change, or
-  null.
+  null. `reported_at` is when the agent planned, by its clock.
+  `received_at` is when the controller got the plan if it came more than
+  90 seconds late, from the agent's outbox; otherwise null.
 - `undeclared` lists the packages the package manager says were installed
   explicitly that no approved item declares, without the ones Ignore hid
   (`ignored_count`). It is null until the agent reports them.
@@ -226,8 +232,10 @@ planned it.
   "hosts": [{ "id": "…", "name": "build-1", "status": "connected",
               "current_config": "…", "proposed_config": "…",
               "plan": { "config_hash": "…", "plan_hash": "…", "exit_code": 2,
-                        "plan": {}, "error": null, "reported_at": "…", "stale": false },
-              "result": { "status": "failed", "plan_hash": "…", "log": "…", "reported_at": "…" } }],
+                        "plan": {}, "error": null, "reported_at": "…", "received_at": null,
+                        "stale": false },
+              "result": { "status": "failed", "plan_hash": "…", "log": "…", "reported_at": "…",
+                          "received_at": null } }],
   "approvals": [{ "id": "…", "by": "…", "passkey": "Laptop", "created_at": "…", "host_count": 2 }] }
 ```
 
@@ -236,6 +244,7 @@ change is approved for the host. Its `status` is `waiting` until the agent
 reports, then `applied`, `failed`, or `replan`: the plan changed before
 the agent applied it, so nothing was applied and the host needs a new
 approval. `log` is the tail of `mise bootstrap`, at most 32 KiB.
+`reported_at` and `received_at` work as in a plan.
 
 ### `POST /api/changes/{id}/discard`
 
@@ -424,7 +433,8 @@ and this JSON as `data`:
   "exit_code": 2,
   "plan": { "resources": [], "summary": {} },
   "error": null,
-  "explicit": { "manager": "pacman", "packages": ["git", "jq"] }
+  "explicit": { "manager": "pacman", "packages": ["git", "jq"] },
+  "at": 1767261600000
 }
 ```
 
@@ -432,8 +442,10 @@ and this JSON as `data`:
 - `explicit` comes only with `current`. It lists `pacman -Qqe` on Arch
   Linux, `apt-mark showmanual` on Debian and Ubuntu, or `brew leaves` on
   macOS.
+- `at` is when the agent planned, in Unix milliseconds by its clock. The
+  controller dates the plan with it, but never later than when it got it.
 - The controller keeps the last plan of each config. It drops plans of
-  unknown changes.
+  unknown changes, and plans older than the one it keeps.
 
 #### Custom message `io.sewa.approval`
 
@@ -466,18 +478,40 @@ isolation as the plan, then plans `current` again. It answers once per
 approval with type `result`:
 
 ```json
-{ "approval_id": "…", "change_id": "…", "status": "applied", "plan_hash": "…", "log": "…" }
+{ "approval_id": "…", "change_id": "…", "status": "applied", "plan_hash": "…", "log": "…",
+  "at": 1767261600000 }
 ```
 
 `status` is `applied`, `failed` (a refused approval, or mise failed;
 `log` says why), or `replan` (the config or the plan changed; nothing ran).
-There is no rollback. One host failing does not stop the others.
+There is no rollback. One host failing does not stop the others. `at` is
+when the agent finished, as in a plan.
+
+#### Offline
+
+The agent keeps its last configs, the approvals it answered, and its
+reports in its state dir, so it works on while the controller is out of
+reach. It plans `current` when it starts and every 24 hours, and applies
+only an approval it holds and verifies.
+
+Each plan and result goes into `<state dir>/outbox` before the agent
+sends it, one file per message. The agent sends the oldest one with each
+message and drops it once the controller answers, so they arrive in order,
+after a restart too. Past 8 MiB the outbox drops its oldest plans first;
+results go only when nothing else is left.
+
+The agent writes `applying.json` before it runs `mise bootstrap` and
+removes it once the result is in the outbox. If it finds the file when it
+starts, mise stopped mid-apply, and it reports `failed` for that approval
+instead of applying it again.
 
 ## Events
 
 The controller appends an event when a host is created, enrolls, connects,
 and disconnects (`host.created`, `host.enrolled`, `host.connected`,
-`host.disconnected`). It also appends `role.created`, `change.created`,
+`host.disconnected`). When a host speaks after more than 90 seconds of
+silence, it appends `host.offline` dated from the start of the silence,
+with `data.from` and `data.until`. It also appends `role.created`, `change.created`,
 `change.edited` (one per edit), and `change.discarded`, which name the role
 or change and, for host edits, the host. `drift.detected` is appended once
 per new drift: when a plan of `current` exits 2 with a plan hash other than

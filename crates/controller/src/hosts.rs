@@ -289,7 +289,7 @@ pub async fn events(
         return Err(Failure::new(StatusCode::NOT_FOUND, "not_found"));
     }
     let rows: Vec<(i64, String, DateTime<Utc>, serde_json::Value)> = sqlx::query_as(
-        "SELECT id, kind, at, data FROM events WHERE host_id = $1 ORDER BY id DESC LIMIT $2",
+        "SELECT id, kind, at, data FROM events WHERE host_id = $1 ORDER BY at DESC, id DESC LIMIT $2",
     )
     .bind(id)
     .bind(EVENT_LIMIT)

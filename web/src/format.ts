@@ -7,6 +7,11 @@ export function formatDateTime(at: string): string {
   return dateTime.format(new Date(at));
 }
 
+/** Says when a late report arrived: the agent kept it while it could not reach the controller. */
+export function formatReceived(at: string): string {
+  return `Received ${formatDateTime(at)}, kept by the agent while offline.`;
+}
+
 /** The time of day of a moment, such as "14:05". */
 export function formatClock(at: string): string {
   return clock.format(new Date(at));

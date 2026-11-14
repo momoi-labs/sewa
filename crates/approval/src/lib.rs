@@ -116,6 +116,11 @@ pub struct Outcome {
     pub plan_hash: Option<String>,
     /// mise's output, or why the agent refused.
     pub log: String,
+    /// When the agent finished with the approval, in Unix milliseconds by
+    /// its clock. A result the agent buffered while the controller was
+    /// down arrives later than this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// One approver key, as the agent pins it.

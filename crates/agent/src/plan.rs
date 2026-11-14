@@ -250,10 +250,11 @@ pub fn explicit_packages() -> Option<(&'static str, Vec<String>)> {
     })
 }
 
-/// The custom message body of a plan. A plan of `current` carries the
-/// explicit packages too.
-pub fn report(plan: &Plan, explicit: Option<&(&str, Vec<String>)>) -> Vec<u8> {
+/// The custom message body of a plan, made at `at` in Unix milliseconds. A
+/// plan of `current` carries the explicit packages too.
+pub fn report(plan: &Plan, explicit: Option<&(&str, Vec<String>)>, at: i64) -> Vec<u8> {
     let mut value = json!({
+        "at": at,
         "config": plan.config,
         "config_hash": plan.config_hash,
         "plan_hash": plan.plan_hash,
@@ -382,8 +383,9 @@ mod tests {
             error: None,
         };
         let explicit = ("pacman", vec!["git".to_owned()]);
-        let value: Value = serde_json::from_slice(&report(&plan, Some(&explicit))).unwrap();
+        let value: Value = serde_json::from_slice(&report(&plan, Some(&explicit), 7)).unwrap();
         assert_eq!(value["exit_code"], 2);
+        assert_eq!(value["at"], 7);
         assert_eq!(
             value["explicit"],
             json!({ "manager": "pacman", "packages": ["git"] })

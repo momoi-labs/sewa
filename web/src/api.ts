@@ -153,7 +153,10 @@ export type Plan = {
   exit_code: number;
   plan: { resources?: PlanResource[]; summary?: Record<string, number> } | null;
   error: string | null;
+  /** When the agent planned, by its clock. */
   reported_at: string;
+  /** When the controller got the plan, if late: the agent kept it while it could not reach the controller. */
+  received_at: string | null;
   /** The plan is of an older config; a new one is on its way. */
   stale: boolean;
 };
@@ -176,7 +179,10 @@ export type HostResult = {
   status: ResultStatus;
   plan_hash: string;
   log: string | null;
+  /** When the agent finished, by its clock. */
   reported_at: string | null;
+  /** When the controller got the result, if late, as with a plan. */
+  received_at: string | null;
 };
 
 export type ApprovalEntry = { id: string; by: string; passkey: string; created_at: string; host_count: number };

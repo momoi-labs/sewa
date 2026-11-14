@@ -15,12 +15,13 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use prost::Message;
 use uuid::Uuid;
 
 use crate::enroll::{authenticate, bearer};
 use crate::error::ApiResult;
-use crate::{AppState, approvals, desired, events};
+use crate::{AppState, approvals, desired, events, status};
 use proto::any_value::Value;
 use proto::{
     AgentConfigMap, AgentConfigObject, AgentDescription, AgentRemoteConfig, AgentToServer,
@@ -54,6 +55,10 @@ pub struct PlanReport {
     /// With a plan of `current`: the packages the host's package manager
     /// lists as explicitly installed.
     pub explicit: Option<Explicit>,
+    /// When the agent planned, in Unix milliseconds by its clock. A plan
+    /// the agent kept while the controller was down arrives later.
+    #[serde(default)]
+    pub at: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -241,13 +246,27 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
         }
     }
     let text = |value: &str| value.replace('\0', "");
+    let received = Utc::now();
+    let reported = status::reported_at(report.at, received);
+    // A buffered plan older than the one kept says nothing new.
+    let newer: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT reported_at FROM host_plans WHERE host_id = $1 AND config = $2 FOR UPDATE",
+    )
+    .bind(host)
+    .bind(&report.config)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if newer.is_some_and(|newer| newer > reported) {
+        return transaction.commit().await;
+    }
     sqlx::query(
         "INSERT INTO host_plans
-             (host_id, config, change_id, config_hash, plan_hash, exit_code, plan, error)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (host_id, config, change_id, config_hash, plan_hash, exit_code, plan, error,
+              reported_at, received_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (host_id, config) DO UPDATE SET
              change_id = $3, config_hash = $4, plan_hash = $5, exit_code = $6,
-             plan = $7, error = $8, reported_at = now()",
+             plan = $7, error = $8, reported_at = $9, received_at = $10",
     )
     .bind(host)
     .bind(&report.config)
@@ -257,6 +276,8 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
     .bind(report.exit_code)
     .bind(&report.plan)
     .bind(report.error.as_deref().map(text))
+    .bind(reported)
+    .bind(received)
     .execute(&mut *transaction)
     .await?;
     if change.is_none() {
@@ -264,12 +285,13 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
             let packages: Vec<String> = explicit.packages.iter().map(|p| text(p)).collect();
             sqlx::query(
                 "UPDATE hosts SET explicit_manager = $2, explicit_packages = $3,
-                     explicit_reported_at = now()
+                     explicit_reported_at = $4
                  WHERE id = $1",
             )
             .bind(host)
             .bind(text(&explicit.manager))
             .bind(packages)
+            .bind(reported)
             .execute(&mut *transaction)
             .await?;
         }
@@ -292,15 +314,23 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
                         .as_ref()
                         .and_then(|plan| plan.get("summary").cloned())
                         .unwrap_or_default();
-                    events::record(
+                    let mut data = serde_json::json!({
+                        "config_hash": report.config_hash,
+                        "plan_hash": report.plan_hash,
+                        "summary": summary,
+                    });
+                    if let Some(late) = status::late(reported, received) {
+                        data["received_at"] = serde_json::json!(late);
+                    }
+                    events::record_at(
                         &mut transaction,
-                        host,
+                        events::About {
+                            host: Some(host),
+                            ..Default::default()
+                        },
                         events::DRIFT_DETECTED,
-                        serde_json::json!({
-                            "config_hash": report.config_hash,
-                            "plan_hash": report.plan_hash,
-                            "summary": summary,
-                        }),
+                        data,
+                        reported,
                     )
                     .await?;
                 }
@@ -329,11 +359,18 @@ async fn save(
 ) -> sqlx::Result<bool> {
     let description = message.agent_description.as_ref().map(Description::from);
     let mut transaction = pool.begin().await?;
-    let (was_connected, known): (bool, Option<Uuid>) =
-        sqlx::query_as("SELECT connected, agent_instance_uid FROM hosts WHERE id = $1 FOR UPDATE")
-            .bind(host)
-            .fetch_one(&mut *transaction)
-            .await?;
+    let (was_connected, known, last_seen, now): (
+        bool,
+        Option<Uuid>,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+    ) = sqlx::query_as(
+        "SELECT connected, agent_instance_uid, last_seen_at, now()
+         FROM hosts WHERE id = $1 FOR UPDATE",
+    )
+    .bind(host)
+    .fetch_one(&mut *transaction)
+    .await?;
     let same_instance = known == Some(instance);
     // A message leaves out what did not change, so each value stays until a
     // description carries a new one, unless another agent instance speaks.
@@ -368,6 +405,21 @@ async fn save(
     )
     .execute(&mut *transaction)
     .await?;
+    // A silence longer than an agent keeps: the host, or the controller,
+    // was down. Its reports from that time may follow, from its outbox.
+    if let Some(from) = last_seen.filter(|from| now - *from > status::CONNECTED_WINDOW) {
+        events::record_at(
+            &mut transaction,
+            events::About {
+                host: Some(host),
+                ..Default::default()
+            },
+            events::HOST_OFFLINE,
+            serde_json::json!({ "from": from, "until": now }),
+            from,
+        )
+        .await?;
+    }
     if !was_connected {
         events::record(
             &mut transaction,

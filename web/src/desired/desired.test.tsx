@@ -85,6 +85,7 @@ const detail: ChangeDetail = {
         },
         error: null,
         reported_at: '2026-01-02T10:01:00Z',
+        received_at: null,
         stale: false,
       },
       result: null,
@@ -167,7 +168,14 @@ describe('host drift', () => {
       items: role.items,
       config: '',
       health: 'drift',
-      drift: { ...detail.hosts[0]!.plan!, status: 'drift', ignored: false, revert_change: null },
+      drift: {
+        ...detail.hosts[0]!.plan!,
+        // A plan the agent kept while offline.
+        received_at: '2026-01-02T11:30:00Z',
+        status: 'drift',
+        ignored: false,
+        revert_change: null,
+      },
       undeclared: {
         manager: 'pacman',
         packages: ['sl'],
@@ -187,6 +195,7 @@ describe('host drift', () => {
     });
     expect(screen.getByText('1 of 3 packages', { exact: false })).toBeInTheDocument();
     expect(within(undeclared).getByText('sl')).toBeInTheDocument();
+    expect(screen.getByText(/kept by the agent while offline/)).toBeInTheDocument();
   });
 });
 

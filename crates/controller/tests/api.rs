@@ -331,6 +331,7 @@ async fn reports_connect_the_host_until_it_goes_quiet(pool: PgPool) {
             "host.enrolled",
             "host.connected",
             "host.disconnected",
+            "host.offline",
             "host.connected"
         ]
     );
@@ -725,6 +726,112 @@ async fn drift_is_recorded_once_and_undeclared_packages_show(pool: PgPool) {
     assert_eq!(state["undeclared"]["manager"], "pacman");
     assert_eq!(state["undeclared"]["packages"], json!(["git", "sl"]));
     assert_eq!(state["undeclared"]["explicit_count"], 3);
+    // A plan sent when it was made is not marked late.
+    assert_eq!(state["drift"]["received_at"], Value::Null);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn reports_kept_while_offline_keep_their_time(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, token) = create_host(&app, "web-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    opamp(&app, &credential, &report(instance, true)).await;
+    // The controller was down for an hour.
+    let last_seen: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "UPDATE hosts SET last_seen_at = now() - interval '1 hour' RETURNING last_seen_at",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let now = chrono::Utc::now();
+    let ago = |minutes: i64| now - chrono::Duration::minutes(minutes);
+    let plan = |exit_code: i32, plan_hash: &str, at: chrono::DateTime<chrono::Utc>| {
+        plan_message(
+            instance,
+            json!({
+                "config": "current", "config_hash": "c", "plan_hash": plan_hash,
+                "exit_code": exit_code, "plan": { "summary": { "drifted": 1 } },
+                "error": null,
+                "explicit": { "manager": "pacman", "packages": ["sl"] },
+                "at": at.timestamp_millis(),
+            }),
+        )
+    };
+    // The outbox sends the drift, then the agent's later plan of the same
+    // drift. An older plan, out of order, changes nothing.
+    for message in [
+        plan(2, "a", ago(30)),
+        plan(2, "a", ago(20)),
+        plan(0, "z", ago(40)),
+    ] {
+        assert_eq!(opamp(&app, &credential, &message).await.0, StatusCode::OK);
+    }
+
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(state["drift"]["status"], "drift");
+    let time = |value: &Value| {
+        chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap())
+            .unwrap()
+            .timestamp_millis()
+    };
+    assert_eq!(
+        time(&state["drift"]["reported_at"]),
+        ago(20).timestamp_millis()
+    );
+    assert!(time(&state["drift"]["received_at"]) >= now.timestamp_millis());
+    assert_eq!(
+        time(&state["undeclared"]["reported_at"]),
+        ago(20).timestamp_millis()
+    );
+
+    // The history reads newest first by the time things happened, so the
+    // drift the host found during the silence comes after the silence.
+    let (_, history) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/events"),
+        None,
+    )
+    .await;
+    let history = history.as_array().unwrap();
+    assert!(history.is_sorted_by(|a, b| time(&a["at"]) >= time(&b["at"])));
+    let kinds: Vec<&str> = history
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .filter(|kind| ["drift.detected", "host.offline"].contains(kind))
+        .collect();
+    assert_eq!(kinds, ["drift.detected", "host.offline"]);
+    let find = |kind: &str| history.iter().find(|event| event["kind"] == kind).unwrap();
+    let drift = find("drift.detected");
+    assert_eq!(time(&drift["at"]), ago(30).timestamp_millis());
+    assert!(time(&drift["data"]["received_at"]) >= now.timestamp_millis());
+    let offline = find("host.offline");
+    assert_eq!(time(&offline["at"]), last_seen.timestamp_millis());
+    assert_eq!(time(&offline["data"]["from"]), last_seen.timestamp_millis());
+
+    // A clock ahead of the controller's does not date a report in the
+    // future.
+    let ahead = now + chrono::Duration::hours(1);
+    opamp(&app, &credential, &plan(0, "z", ahead)).await;
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert!(time(&state["drift"]["reported_at"]) <= chrono::Utc::now().timestamp_millis());
+    assert_eq!(state["drift"]["received_at"], Value::Null);
 }
 
 /// The relying party of the test controller's public URL.
@@ -986,12 +1093,20 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
         status: "applied".to_owned(),
         plan_hash: Some("p1".to_owned()),
         log: "installed jq".to_owned(),
+        // The agent kept the result while the controller was down.
+        at: Some((chrono::Utc::now() - chrono::Duration::minutes(5)).timestamp_millis()),
     };
     opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
     assert!(sent_approval(&app, &credential, instance).await.is_none());
     let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
     assert_eq!(detail["hosts"][0]["result"]["status"], "applied");
     assert_eq!(detail["hosts"][0]["result"]["log"], "installed jq");
+    let result = &detail["hosts"][0]["result"];
+    let reported = chrono::DateTime::parse_from_rfc3339(result["reported_at"].as_str().unwrap())
+        .unwrap()
+        .timestamp_millis();
+    assert_eq!(Some(reported), outcome.at);
+    assert!(result["received_at"].is_string());
     let kinds = events(&pool, &host).await;
     assert!(kinds.ends_with(&["change.approved".to_owned(), "plan.applied".to_owned()]));
 }
@@ -1011,6 +1126,7 @@ async fn a_host_whose_plan_changed_gets_approved_again(pool: PgPool) {
         status: "replan".to_owned(),
         plan_hash: Some("p2".to_owned()),
         log: "the plan changed since the approval".to_owned(),
+        at: None,
     };
     opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
     let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;

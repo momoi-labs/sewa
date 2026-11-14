@@ -1,5 +1,6 @@
 //! The append-only history of each host.
 
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -8,6 +9,7 @@ pub const HOST_CREATED: &str = "host.created";
 pub const HOST_ENROLLED: &str = "host.enrolled";
 pub const HOST_CONNECTED: &str = "host.connected";
 pub const HOST_DISCONNECTED: &str = "host.disconnected";
+pub const HOST_OFFLINE: &str = "host.offline";
 pub const ROLE_CREATED: &str = "role.created";
 pub const CHANGE_CREATED: &str = "change.created";
 pub const CHANGE_EDITED: &str = "change.edited";
@@ -53,6 +55,30 @@ pub async fn record_about(
     .bind(about.role)
     .bind(kind)
     .bind(data)
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// Appends one event that happened at `at` rather than now, such as a
+/// report the agent kept while it could not reach the controller.
+pub async fn record_at(
+    connection: &mut PgConnection,
+    about: About,
+    kind: &str,
+    data: Value,
+    at: DateTime<Utc>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO events (host_id, change_id, role_id, kind, data, at)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(about.host)
+    .bind(about.change)
+    .bind(about.role)
+    .bind(kind)
+    .bind(data)
+    .bind(at)
     .execute(connection)
     .await?;
     Ok(())
