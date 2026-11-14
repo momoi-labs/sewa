@@ -20,9 +20,21 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'The controller cannot check who you are',
     body: 'tailscaled on the controller did not answer. Check that Tailscale runs there, then try again.',
   },
-  not_found: {
-    title: 'This host does not exist',
-    body: 'No host has this address. Go back to the host list and pick one.',
+  invalid_item: {
+    title: 'The item was not saved',
+    body: 'Its name or version is empty, too long, or has spaces at either end, or a tool was set to absent. Fix it, then try again.',
+  },
+  unknown_role: {
+    title: 'The role no longer exists',
+    body: 'Reload the page and pick another role.',
+  },
+  unknown_host: {
+    title: 'The host no longer exists',
+    body: 'Reload the page and pick another host.',
+  },
+  not_draft: {
+    title: 'The change is closed',
+    body: 'Someone discarded this change already. Reload the page to see it.',
   },
   internal: {
     title: 'Something went wrong on the controller',
@@ -34,9 +46,25 @@ export function errorCode(error: unknown): string {
   return error instanceof ApiFailure ? error.code : 'internal';
 }
 
-/** An error Alert for a failed API call, with an optional retry. */
-export function ErrorAlert({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
-  const message = messages[errorCode(error)] ?? messages.internal!;
+/** An error Alert for a failed API call, with an optional retry. `thing`
+ *  names what a 404 did not find: a host, a role, or a change. */
+export function ErrorAlert({
+  error,
+  onRetry,
+  thing = 'host',
+}: {
+  error: unknown;
+  onRetry?: () => void;
+  thing?: string;
+}) {
+  const code = errorCode(error);
+  const message =
+    code === 'not_found'
+      ? {
+          title: `This ${thing} does not exist`,
+          body: `No ${thing} has this address. Go back to the ${thing} list and pick one.`,
+        }
+      : (messages[code] ?? messages.internal!);
   return (
     <Alert variant="error">
       <AlertContent>

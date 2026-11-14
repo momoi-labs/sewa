@@ -31,20 +31,23 @@ import { useQuery } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 
-import { eventsQuery, type Host, type HostEvent, hostQuery } from '../api';
+import { eventsQuery, type Host, type HostEvent, hostQuery, hostStateQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { Unknown } from '../components/Unknown';
+import { HostDesired, HostDrift } from '../desired/HostDesired';
 import { formatAgo, formatDateTime, osNames } from '../format';
 import { HostStatusBadge } from './HostStatusBadge';
 
 const route = getRouteApi('/hosts/$hostId');
 
-/** One host: what its agent reports, and its events. */
+/** One host: what its agent reports, its desired state, its drift, and its
+ *  events. */
 export function HostPage() {
   const { hostId } = route.useParams();
   const host = useQuery(hostQuery(hostId));
   const events = useQuery(eventsQuery(hostId));
+  const state = useQuery(hostStateQuery(hostId));
 
   return (
     <>
@@ -76,10 +79,30 @@ export function HostPage() {
             <Tabs defaultValue="summary">
               <TabsList aria-label="Host details">
                 <TabsTrigger value="summary">Summary</TabsTrigger>
+                <TabsTrigger value="desired">Desired state</TabsTrigger>
+                <TabsTrigger value="drift">Drift</TabsTrigger>
                 <TabsTrigger value="events">Events</TabsTrigger>
               </TabsList>
               <TabsContent value="summary">
                 {host.data ? <Summary host={host.data} now={host.dataUpdatedAt} /> : <Skeleton />}
+              </TabsContent>
+              <TabsContent value="desired">
+                {state.isError && !state.data ? (
+                  <ErrorAlert error={state.error} onRetry={() => void state.refetch()} />
+                ) : host.data && state.data ? (
+                  <HostDesired host={host.data} state={state.data} />
+                ) : (
+                  <Skeleton />
+                )}
+              </TabsContent>
+              <TabsContent value="drift">
+                {state.isError && !state.data ? (
+                  <ErrorAlert error={state.error} onRetry={() => void state.refetch()} />
+                ) : state.data ? (
+                  <HostDrift state={state.data} />
+                ) : (
+                  <Skeleton />
+                )}
               </TabsContent>
               <TabsContent value="events" className="detail-pane">
                 <Events
@@ -147,6 +170,10 @@ export function describeEvent(event: HostEvent): string {
       return 'Agent connected';
     case 'host.disconnected':
       return 'Agent stopped reporting';
+    case 'change.edited':
+      return 'A draft change edits this host';
+    case 'drift.detected':
+      return 'The host drifted from its approved state';
     default:
       return event.kind;
   }

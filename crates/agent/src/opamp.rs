@@ -1,7 +1,8 @@
 //! The OpAMP client: the agent reports who it is to the controller over the
 //! specification's plain HTTP transport, which polls instead of holding a
-//! WebSocket. Adapted from pg-yard's `crates/agent/src/opamp.rs`, without
-//! health, remote configuration, or custom messages.
+//! WebSocket. Adapted from pg-yard's `crates/agent/src/opamp.rs`. The
+//! controller sends mise configs as remote config; the agent sends their
+//! plans back as `io.sewa.plan` custom messages.
 
 use std::fmt;
 use std::time::Duration;
@@ -25,6 +26,10 @@ pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `service.name` the agent reports.
 pub const SERVICE_NAME: &str = "sewa-agent";
+
+/// The custom capability of plan reports, and its one message type.
+pub const PLAN_CAPABILITY: &str = "io.sewa.plan";
+pub const PLAN_TYPE: &str = "plan";
 
 /// The specification's default polling interval.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -104,7 +109,13 @@ pub fn message(instance_uid: Uuid, sequence_num: u64, host: &Host) -> AgentToSer
         instance_uid: instance_uid.as_bytes().to_vec(),
         sequence_num,
         agent_description: Some(describe(instance_uid, host)),
-        capabilities: AgentCapabilities::ReportsStatus as u64,
+        capabilities: AgentCapabilities::ReportsStatus as u64
+            | AgentCapabilities::AcceptsRemoteConfig as u64
+            | AgentCapabilities::ReportsRemoteConfig as u64
+            | AgentCapabilities::ReportsHealth as u64,
+        custom_capabilities: Some(proto::CustomCapabilities {
+            capabilities: vec![PLAN_CAPABILITY.to_owned()],
+        }),
         ..Default::default()
     }
 }

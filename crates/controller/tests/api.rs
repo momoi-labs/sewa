@@ -13,8 +13,8 @@ use prost::Message;
 use serde_json::{Value, json};
 use sewa_controller::install::AgentFiles;
 use sewa_controller::opamp::proto::{
-    AgentDescription, AgentToServer, AnyValue, KeyValue, ServerToAgent, ServerToAgentFlags,
-    any_value,
+    AgentDescription, AgentToServer, AnyValue, CustomMessage, KeyValue, RemoteConfigStatus,
+    ServerToAgent, ServerToAgentFlags, any_value,
 };
 use sewa_controller::whois::{Identity, WhoIs, WhoIsFuture};
 use sewa_controller::{AppState, router, status};
@@ -443,4 +443,283 @@ async fn a_host_reads_with_its_events_newest_first(pool: PgPool) {
             "{uri}"
         );
     }
+}
+
+async fn edit(app: &Router, edit: Value) -> (StatusCode, Value) {
+    json_call(app, ADMIN, "POST", "/api/changes/draft/edits", Some(edit)).await
+}
+
+async fn create_role(app: &Router, name: &str) -> String {
+    let (status, role) = json_call(
+        app,
+        ADMIN,
+        "POST",
+        "/api/roles",
+        Some(json!({ "name": name })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{role}");
+    role["id"].as_str().unwrap().to_owned()
+}
+
+fn plan_message(instance: Uuid, plan: Value) -> AgentToServer {
+    AgentToServer {
+        custom_message: Some(CustomMessage {
+            capability: "io.sewa.plan".to_owned(),
+            r#type: "plan".to_owned(),
+            data: plan.to_string().into_bytes(),
+        }),
+        ..report(instance, false)
+    }
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn edits_go_into_one_draft_change(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, _) = create_host(&app, "node-1").await;
+    let role = create_role(&app, "base").await;
+    let (status, body) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        "/api/roles",
+        Some(json!({ "name": "base" })),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "name_taken" }))
+    );
+
+    let (status, change) = edit(
+        &app,
+        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{change}");
+    assert_eq!(change["status"], "draft");
+    let (_, second) = edit(
+        &app,
+        json!({ "op": "host_role_add", "host": host, "role": role }),
+    )
+    .await;
+    assert_eq!(second["id"], change["id"]);
+    assert_eq!(second["edit_count"], 2);
+
+    let (status, body) = edit(
+        &app,
+        json!({ "op": "role_item_set", "role": Uuid::new_v4(), "kind": "package", "name": "jq", "version": "latest" }),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::BAD_REQUEST, json!({ "error": "unknown_role" }))
+    );
+    let (status, body) = edit(
+        &app,
+        json!({ "op": "role_item_set", "role": role, "kind": "tool", "name": "node", "version": "absent" }),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_item" }))
+    );
+
+    // The approved state is untouched; the draft shows what it proposes.
+    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
+    assert_eq!(roles[0]["items"], json!([]));
+    assert_eq!(
+        roles[0]["proposed_items"],
+        json!([{ "kind": "package", "name": "jq", "version": "latest" }])
+    );
+    assert_eq!(roles[0]["proposed_hosts"][0]["name"], "node-1");
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(state["roles"], json!([]));
+    assert_eq!(state["proposed_roles"][0]["name"], "base");
+
+    let id = change["id"].as_str().unwrap();
+    let (status, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["edits"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["hosts"][0]["name"], "node-1");
+    assert!(
+        detail["hosts"][0]["proposed_config"]
+            .as_str()
+            .unwrap()
+            .contains("[bootstrap.packages]\n\"jq\" = \"latest\"\n")
+    );
+    assert_eq!(detail["hosts"][0]["plan"], Value::Null);
+
+    let discard = format!("/api/changes/{id}/discard");
+    let (status, closed) = json_call(&app, ADMIN, "POST", &discard, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(closed["status"], "discarded");
+    let (status, body) = json_call(&app, ADMIN, "POST", &discard, None).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "not_draft" }))
+    );
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM events WHERE change_id = $1::uuid ORDER BY id")
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        kinds,
+        [
+            "change.created",
+            "change.edited",
+            "change.edited",
+            "change.discarded"
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn the_agent_gets_configs_and_reports_plans(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, token) = create_host(&app, "node-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    let role = create_role(&app, "base").await;
+    edit(
+        &app,
+        json!({ "op": "host_role_add", "host": host, "role": role }),
+    )
+    .await;
+    let (_, change) = edit(
+        &app,
+        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
+    )
+    .await;
+    let id = change["id"].as_str().unwrap();
+    let name = format!("change/{id}");
+
+    let (_, body) = opamp(&app, &credential, &report(instance, true)).await;
+    let remote = ServerToAgent::decode(&body[..])
+        .unwrap()
+        .remote_config
+        .unwrap();
+    let configs = remote.config.unwrap().config_map;
+    assert_eq!(configs.len(), 2);
+    assert!(!String::from_utf8_lossy(&configs["current"].body).contains("jq"));
+    let proposed = &configs[&name];
+    assert_eq!(proposed.content_type, "application/toml");
+    assert!(String::from_utf8_lossy(&proposed.body).contains("\"jq\" = \"latest\""));
+
+    // An agent that has the config gets it no more.
+    let mut known = report(instance, false);
+    known.remote_config_status = Some(RemoteConfigStatus {
+        last_remote_config_hash: remote.config_hash.clone(),
+        ..Default::default()
+    });
+    let (_, body) = opamp(&app, &credential, &known).await;
+    assert!(
+        ServerToAgent::decode(&body[..])
+            .unwrap()
+            .remote_config
+            .is_none()
+    );
+
+    let config_hash = sewa_controller::desired::hash(&String::from_utf8_lossy(&proposed.body));
+    let plan = json!({
+        "resources": [{ "id": { "kind": "package", "name": "pacman:jq" }, "action": "create" }],
+        "summary": { "create": 1 }
+    });
+    let (status, _) = opamp(
+        &app,
+        &credential,
+        &plan_message(
+            instance,
+            json!({ "config": name, "config_hash": config_hash, "plan_hash": "p1", "exit_code": 2, "plan": plan, "error": null }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    let reported = &detail["hosts"][0]["plan"];
+    assert_eq!(reported["plan"], plan);
+    assert_eq!(reported["exit_code"], 2);
+    assert_eq!(reported["stale"], false);
+
+    // Another edit changes the config, so the plan is stale until the
+    // agent plans again.
+    edit(
+        &app,
+        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "git", "version": "latest" }),
+    )
+    .await;
+    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    assert_eq!(detail["hosts"][0]["plan"]["stale"], true);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn drift_is_recorded_once_and_undeclared_packages_show(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, token) = create_host(&app, "node-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    opamp(&app, &credential, &report(instance, true)).await;
+    // Approval is not built yet, so the approved state is written here.
+    let role = create_role(&app, "base").await;
+    sqlx::query("INSERT INTO role_items VALUES ($1::uuid, 'package', 'jq', 'latest')")
+        .bind(&role)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO host_roles VALUES ($1::uuid, $2::uuid)")
+        .bind(&host)
+        .bind(&role)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let current = |exit_code: i32, plan_hash: &str| {
+        plan_message(
+            instance,
+            json!({
+                "config": "current", "config_hash": "c", "plan_hash": plan_hash,
+                "exit_code": exit_code, "plan": { "resources": [] }, "error": null,
+                "explicit": { "manager": "pacman", "packages": ["git", "jq", "sl"] }
+            }),
+        )
+    };
+    for message in [
+        current(2, "a"),
+        current(2, "a"),
+        current(0, "z"),
+        current(2, "a"),
+        current(2, "b"),
+    ] {
+        assert_eq!(opamp(&app, &credential, &message).await.0, StatusCode::OK);
+    }
+    let drifts = events(&pool, &host)
+        .await
+        .into_iter()
+        .filter(|kind| kind == "drift.detected")
+        .count();
+    assert_eq!(drifts, 3);
+
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(state["roles"][0]["name"], "base");
+    assert_eq!(state["drift"]["status"], "drift");
+    assert_eq!(state["drift"]["plan_hash"], "b");
+    assert_eq!(state["undeclared"]["manager"], "pacman");
+    assert_eq!(state["undeclared"]["packages"], json!(["git", "sl"]));
+    assert_eq!(state["undeclared"]["explicit_count"], 3);
 }
