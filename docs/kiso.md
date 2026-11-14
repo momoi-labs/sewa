@@ -16,13 +16,14 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only sizes Kiso leaves to the product, such as a LogView height. |
+| Product CSS | `web/src/product.css`: only sizes Kiso leaves to the product, such as a LogView height. `web/src/components/SewaMark.css` holds the logo colors. |
 
 ## Product components
 
 | Component | Use |
 | --- | --- |
 | `Shell` | The application shell with the Hosts, Roles, Changes and Passkeys destinations and the theme selector. |
+| `SewaMark` | The sewa emblem in the shell's brand. The brand kit is in `docs/brand/`. |
 | `HostStatusBadge` | A host's status: waiting, connected, or disconnected. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
 | `Unknown` | A missing value: a muted dash with a tooltip that says why. |
@@ -71,7 +72,12 @@ contract disagree, the contract wins and this file has a bug.
 
 ## Exceptions
 
-None.
+- The shell's brand shows the sewa emblem with `SewaMark` in place of a
+  BrandMark, 32 px high, with no fill behind it. Kiso 1.8's BrandMark holds a
+  letter or a 14 px line icon on the primary fill, and the emblem cannot be
+  read at that size. Its colors are the brand's, in `SewaMark.css`, not Kiso
+  tokens, so it keeps its colors with any accent. Kiso needs a BrandMark for
+  a product logo.
 
 ## Verify
 
