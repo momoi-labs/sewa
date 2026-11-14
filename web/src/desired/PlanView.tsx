@@ -20,7 +20,7 @@ import { Minus, Pencil, Plus } from 'lucide-react';
 
 import type { Plan, PlanResource } from '../api';
 import { Unknown } from '../components/Unknown';
-import { formatDateTime } from '../format';
+import { formatDateTime, formatReceived } from '../format';
 
 /** The label of each plan action. A removal is drawn as a danger, since it
  *  takes something off the host. */
@@ -100,6 +100,7 @@ export function PlanView({ plan, waiting }: { plan: Plan | null; waiting: string
       <p className="row-wrap">
         <span>{summarize(resources)}.</span>
         <span className="muted">Planned {formatDateTime(plan.reported_at)}.</span>
+        {plan.received_at && <span className="muted">{formatReceived(plan.received_at)}</span>}
         {plan.stale && <Badge variant="warning">Outdated: a new plan is on its way</Badge>}
       </p>
       {plan.error && (

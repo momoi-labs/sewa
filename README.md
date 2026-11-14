@@ -9,7 +9,9 @@ sewa is early. Hosts can enroll and report their status, and a web app
 lists them. Roles and host adjustments are edited in a draft change, and
 each agent plans the change and its current desired state with mise. A
 person approves a change with a passkey, and each agent applies it only
-after it checks the signature against the keys its install pinned. See
+after it checks the signature against the keys its install pinned. When
+the controller is down, each agent keeps checking its last approved state
+and sends its reports once the controller is back. See
 [docs/api.md](docs/api.md).
 
 ## What sewa will do

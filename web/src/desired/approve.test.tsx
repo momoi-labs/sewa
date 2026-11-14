@@ -24,6 +24,7 @@ const plan = {
   plan: { resources: [{ id: { kind: 'package', name: 'jq' }, current: null, desired: 'latest', action: 'create' }] },
   error: null,
   reported_at: '2026-01-02T10:01:00Z',
+  received_at: null,
   stale: false,
 };
 
@@ -139,24 +140,33 @@ describe('approve', () => {
       ...draft,
       status: 'approved',
       hosts: [
-        affected(host.id, 'build-1', { status: 'applied', plan_hash: 'p1', log: 'done', reported_at: plan.reported_at }),
+        affected(host.id, 'build-1', {
+          status: 'applied',
+          plan_hash: 'p1',
+          log: 'done',
+          reported_at: plan.reported_at,
+          received_at: '2026-01-02T11:30:00Z',
+        }),
         affected('22222222-2222-4222-8222-222222222222', 'build-2', {
           status: 'failed',
           plan_hash: 'p1',
           log: 'error: target not found: jq',
           reported_at: plan.reported_at,
+          received_at: null,
         }),
         affected('33333333-3333-4333-8333-333333333333', 'build-3', {
           status: 'replan',
           plan_hash: 'p1',
           log: 'the plan changed',
           reported_at: plan.reported_at,
+          received_at: null,
         }),
         affected('55555555-5555-4555-8555-555555555555', 'build-4', {
           status: 'waiting',
           plan_hash: 'p1',
           log: null,
           reported_at: null,
+          received_at: null,
         }),
       ],
       approvals: [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: plan.reported_at, host_count: 4 }],
@@ -167,6 +177,8 @@ describe('approve', () => {
       await screen.findByText('Applied on 1 of 4 hosts, 1 failed, 1 need re-approval, 1 waiting.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Applied')).toBeInTheDocument();
+    // The agent kept this result while it could not reach the controller.
+    expect(screen.getByText(/applied the plan.*kept by the agent while offline/)).toBeInTheDocument();
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.getByText('Needs re-approval')).toBeInTheDocument();
     expect(screen.getByText('error: target not found: jq')).toBeInTheDocument();

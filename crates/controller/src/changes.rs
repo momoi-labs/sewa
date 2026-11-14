@@ -259,7 +259,11 @@ pub struct Plan {
     /// mise's JSON plan.
     pub plan: Option<serde_json::Value>,
     pub error: Option<String>,
+    /// When the agent planned, by its clock.
     pub reported_at: DateTime<Utc>,
+    /// When the controller got the plan, if late: the agent kept it while
+    /// it could not reach the controller.
+    pub received_at: Option<DateTime<Utc>>,
     /// The plan is of another config than the one the host gets now, so a
     /// newer plan is on its way.
     pub stale: bool,
@@ -289,7 +293,10 @@ pub struct HostResult {
     pub plan_hash: String,
     /// mise's output, or why the agent refused.
     pub log: Option<String>,
+    /// When the agent finished, by its clock.
     pub reported_at: Option<DateTime<Utc>>,
+    /// When the controller got the result, if late, as with a plan.
+    pub received_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -319,10 +326,11 @@ type PlanRow = (
     Option<serde_json::Value>,
     Option<String>,
     DateTime<Utc>,
+    Option<DateTime<Utc>>,
 );
 
 pub fn plan(row: PlanRow, config_hash: Option<&str>) -> Plan {
-    let (hash, plan_hash, exit_code, plan, error, reported_at) = row;
+    let (hash, plan_hash, exit_code, plan, error, reported_at, received_at) = row;
     Plan {
         stale: config_hash.is_some_and(|expected| expected != hash),
         config_hash: hash,
@@ -331,16 +339,31 @@ pub fn plan(row: PlanRow, config_hash: Option<&str>) -> Plan {
         plan,
         error,
         reported_at,
+        received_at: received_at.and_then(|received| crate::status::late(reported_at, received)),
     }
 }
 
 type HostRow = (Uuid, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
-type ResultRow = (String, String, Option<String>, Option<DateTime<Utc>>);
-type HostResultRow = (Uuid, String, String, Option<String>, Option<DateTime<Utc>>);
+type ResultRow = (
+    String,
+    String,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+);
+type HostResultRow = (
+    Uuid,
+    String,
+    String,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+);
 
 pub const SELECT_PLAN: &str =
-    "SELECT config_hash, plan_hash, exit_code, plan, error, reported_at FROM host_plans
+    "SELECT config_hash, plan_hash, exit_code, plan, error, reported_at, received_at
+     FROM host_plans
      WHERE host_id = $1 AND config = $2";
 
 /// `GET /api/changes/{id}`: a change, its edits, the plan of each host it
@@ -367,7 +390,7 @@ pub async fn get(
             .fetch_all(&mut *connection)
             .await?;
     let results: Vec<HostResultRow> = sqlx::query_as(
-        "SELECT host_id, status, plan_hash, log, reported_at FROM change_hosts
+        "SELECT host_id, status, plan_hash, log, reported_at, received_at FROM change_hosts
              WHERE change_id = $1",
     )
     .bind(id)
@@ -375,7 +398,9 @@ pub async fn get(
     .await?;
     let mut results: HashMap<Uuid, ResultRow> = results
         .into_iter()
-        .map(|(host, status, plan_hash, log, at)| (host, (status, plan_hash, log, at)))
+        .map(|(host, status, plan_hash, log, at, received)| {
+            (host, (status, plan_hash, log, at, received))
+        })
         .collect();
     let approvals: Vec<(Uuid, String, String, DateTime<Utc>, i32)> = sqlx::query_as(
         "SELECT a.id, a.by, p.name, a.created_at, jsonb_array_length(a.hosts)
@@ -441,12 +466,17 @@ pub async fn get(
             current_config,
             plan: plan_row.map(|row| plan(row, expected.as_deref())),
             proposed_config,
-            result: result.map(|(status, plan_hash, log, reported_at)| HostResult {
-                status,
-                plan_hash,
-                log,
-                reported_at,
-            }),
+            result: result.map(
+                |(status, plan_hash, log, reported_at, received_at)| HostResult {
+                    status,
+                    plan_hash,
+                    log,
+                    reported_at,
+                    received_at: reported_at
+                        .zip(received_at)
+                        .and_then(|(reported, received)| crate::status::late(reported, received)),
+                },
+            ),
         });
     }
     Ok(Json(ChangeDetail {

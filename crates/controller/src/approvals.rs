@@ -26,6 +26,7 @@ use crate::desired;
 use crate::error::{ApiResult, Failure};
 use crate::events::{self, About};
 use crate::passkeys;
+use crate::status;
 use crate::whois::Identity;
 
 /// The longest log the controller keeps of one apply.
@@ -304,9 +305,11 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
         }
         log = format!("…{}", &log[start..]);
     }
+    let received = chrono::Utc::now();
+    let reported = status::reported_at(outcome.at, received);
     let mut transaction = pool.begin().await?;
     let updated = sqlx::query(
-        "UPDATE change_hosts SET status = $4, log = $5, reported_at = now()
+        "UPDATE change_hosts SET status = $4, log = $5, reported_at = $6, received_at = $7
          WHERE change_id = $1 AND host_id = $2 AND approval_id = $3 AND status = 'waiting'",
     )
     .bind(outcome.change_id)
@@ -314,10 +317,19 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
     .bind(outcome.approval_id)
     .bind(&outcome.status)
     .bind(&log)
+    .bind(reported)
+    .bind(received)
     .execute(&mut *transaction)
     .await?;
     if updated.rows_affected() == 1 {
-        events::record_about(
+        let mut data = serde_json::json!({
+            "approval_id": outcome.approval_id,
+            "plan_hash": outcome.plan_hash,
+        });
+        if let Some(late) = status::late(reported, received) {
+            data["received_at"] = serde_json::json!(late);
+        }
+        events::record_at(
             &mut transaction,
             About {
                 host: Some(host),
@@ -325,10 +337,8 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
                 role: None,
             },
             kind,
-            serde_json::json!({
-                "approval_id": outcome.approval_id,
-                "plan_hash": outcome.plan_hash,
-            }),
+            data,
+            reported,
         )
         .await?;
     }

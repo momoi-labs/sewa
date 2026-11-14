@@ -36,7 +36,7 @@ import { ErrorAlert } from '../components/ErrorAlert';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { Unknown } from '../components/Unknown';
 import { HostDesired, HostDrift } from '../desired/HostDesired';
-import { formatAgo, formatDateTime, osNames } from '../format';
+import { formatAgo, formatDateTime, formatReceived, osNames } from '../format';
 import { HostStatusBadge } from './HostStatusBadge';
 
 const route = getRouteApi('/hosts/$hostId');
@@ -174,6 +174,10 @@ export function describeEvent(event: HostEvent): string {
       return 'Agent connected';
     case 'host.disconnected':
       return 'Agent stopped reporting';
+    case 'host.offline':
+      return typeof event.data.from === 'string' && typeof event.data.until === 'string'
+        ? `No reports from ${formatDateTime(event.data.from)} to ${formatDateTime(event.data.until)}`
+        : 'No reports for a while';
     case 'change.edited':
       return 'A draft change edits this host';
     case 'drift.detected':
@@ -233,7 +237,12 @@ function Events({
               <TableCell>
                 <Moment at={event.at} />
               </TableCell>
-              <TableCell>{describeEvent(event)}</TableCell>
+              <TableCell>
+                {describeEvent(event)}
+                {typeof event.data.received_at === 'string' && (
+                  <div className="muted">{formatReceived(event.data.received_at)}</div>
+                )}
+              </TableCell>
               <TableCell className="mono muted">{event.kind}</TableCell>
             </TableRow>
           ))

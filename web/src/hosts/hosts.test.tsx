@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import type { Host } from '../api';
+import { formatDateTime, formatReceived } from '../format';
 import { mockApi, renderRoute } from '../test-utils';
 
 const seen = new Date(Date.now() - 12_000).toISOString();
@@ -100,6 +101,18 @@ describe('hosts', () => {
       [`GET /api/hosts/${connected.id}/events`]: {
         status: 200,
         body: [
+          {
+            id: 5,
+            kind: 'drift.detected',
+            at: '2026-01-01T11:30:00Z',
+            data: { received_at: '2026-01-01T12:00:00Z' },
+          },
+          {
+            id: 4,
+            kind: 'host.offline',
+            at: '2026-01-01T11:00:00Z',
+            data: { from: '2026-01-01T11:00:00Z', until: '2026-01-01T12:00:00Z' },
+          },
           { id: 3, kind: 'host.connected', at: '2026-01-01T10:01:05Z', data: {} },
           { id: 2, kind: 'host.enrolled', at: '2026-01-01T10:01:00Z', data: {} },
           { id: 1, kind: 'host.created', at: '2026-01-01T10:00:00Z', data: { name: 'build-1', os: 'linux' } },
@@ -113,6 +126,8 @@ describe('hosts', () => {
     await user.click(screen.getByRole('tab', { name: 'Events' }));
     const rows = (await screen.findAllByRole('row')).slice(1);
     expect(rows.map((row) => within(row).getAllByRole('cell')[1]!.textContent)).toEqual([
+      `The host drifted from its approved state${formatReceived('2026-01-01T12:00:00Z')}`,
+      `No reports from ${formatDateTime('2026-01-01T11:00:00Z')} to ${formatDateTime('2026-01-01T12:00:00Z')}`,
       'Agent connected',
       'Install token traded for an agent credential',
       'Host created for Linux',

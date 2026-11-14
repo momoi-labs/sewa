@@ -47,7 +47,7 @@ import { useState } from 'react';
 
 import { type AffectedHost, type ChangeDetail, changeQuery, discardChange, hostsQuery, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
-import { formatDateTime } from '../format';
+import { formatDateTime, formatReceived } from '../format';
 import { HostStatusBadge } from '../hosts/HostStatusBadge';
 import { ApplyResultBadge, applySummary } from './ApplyResult';
 import { ApproveDialog } from './ApproveDialog';
@@ -204,7 +204,9 @@ function HostPlan({ host }: { host: AffectedHost }) {
 
 /** What the host's agent said about the approval. */
 function HostResult({ result }: { result: NonNullable<AffectedHost['result']> }) {
-  const reported = result.reported_at ? ` Reported ${formatDateTime(result.reported_at)}.` : '';
+  const reported =
+    (result.reported_at ? ` Reported ${formatDateTime(result.reported_at)}.` : '') +
+    (result.received_at ? ` ${formatReceived(result.received_at)}` : '');
   const text = {
     waiting: 'The agent applies the plan on its next report.',
     applied: `The agent applied the plan with mise bootstrap.${reported}`,

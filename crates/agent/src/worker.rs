@@ -1,32 +1,61 @@
 //! What the agent does with the controller's configs: plans each new one,
-//! plans the current desired state again once a day to find drift, applies
-//! `current` when a pinned approver key signed its plan, and queues the
-//! plans and apply results for the controller.
+//! plans the current desired state again on start and once a day to find
+//! drift, applies `current` when a pinned approver key signed its plan, and
+//! keeps the plans and apply results in the outbox for the controller.
+//!
+//! The worker keeps what it needs on disk, so it works on when the
+//! controller is down and after a restart: the last remote config, the
+//! config hash each config was planned with, the approvals it answered, and
+//! the outbox. While the controller is down it applies nothing: an apply
+//! needs an approval the controller sends.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use prost::Message;
+use serde::{Deserialize, Serialize};
 use sewa_approval::{Outcome, Signed};
 use uuid::Uuid;
 
 use crate::opamp::proto::{
     AgentRemoteConfig, AgentToServer, ComponentHealth, CustomMessage, RemoteConfigStatus,
-    RemoteConfigStatuses,
+    RemoteConfigStatuses, ServerToAgent,
 };
-use crate::opamp::{PLAN_CAPABILITY, PLAN_TYPE};
+use crate::opamp::{ExchangeError, PLAN_CAPABILITY, PLAN_TYPE};
+use crate::outbox::{self, Outbox};
 use crate::plan::{self, CURRENT, Plan, Planner};
 use crate::state::State;
 
 /// How often the agent plans the current desired state again.
 pub const DRIFT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The last remote config, as OpAMP encodes it.
+const REMOTE_CONFIG: &str = "remote_config.pb";
+/// The config hash each config was last planned with.
+const PLANNED: &str = "planned.json";
+/// The approvals the agent answered, newest last.
+const ANSWERED: &str = "answered.json";
+/// The approval being applied. It exists only while mise applies.
+const APPLYING: &str = "applying.json";
+/// How many answered approvals the agent remembers.
+const ANSWERED_LIMIT: usize = 256;
+
+/// What the agent writes down before it applies, so a restart in the
+/// middle still reports.
+#[derive(Debug, Serialize, Deserialize)]
+struct Applying {
+    approval_id: Uuid,
+    change_id: Uuid,
+    plan_hash: Option<String>,
+}
+
 pub struct Worker {
     planner: Planner,
-    /// Where the pinned approver keys are.
+    /// Where the pinned approver keys and the worker's files are.
     state: State,
     instance_uid: Uuid,
-    /// The approvals this run already answered.
-    answered: HashSet<Uuid>,
+    /// The approvals the agent answered, newest last.
+    answered: Vec<Uuid>,
     /// The hash of the last remote config, sent back on every message.
     remote_config_hash: Vec<u8>,
     /// Each config and the hash of its body.
@@ -37,29 +66,114 @@ pub struct Worker {
     health: Option<ComponentHealth>,
     /// Plan reports and apply results the controller has not received
     /// yet.
-    pub queue: VecDeque<CustomMessage>,
+    pub outbox: Outbox,
+}
+
+/// Now, in Unix milliseconds.
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 impl Worker {
+    /// A worker with what an earlier run left in the state directory.
     pub fn new(planner: Planner, state: State, instance_uid: Uuid) -> Self {
-        Self {
+        let outbox = Outbox::open(state.dir.join("outbox"), outbox::LIMIT);
+        let answered = state
+            .read(ANSWERED)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let planned = state
+            .read(PLANNED)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut worker = Self {
             planner,
             state,
             instance_uid,
-            answered: HashSet::new(),
+            answered,
             remote_config_hash: Vec::new(),
             configs: BTreeMap::new(),
-            planned: BTreeMap::new(),
+            planned,
             current_planned_at: None,
             health: None,
-            queue: VecDeque::new(),
+            outbox,
+        };
+        if let Some(remote) = worker
+            .state
+            .read(REMOTE_CONFIG)
+            .and_then(|bytes| AgentRemoteConfig::decode(&bytes[..]).ok())
+        {
+            worker.take(remote);
+        }
+        worker
+    }
+
+    /// What the agent does when it starts, before it reaches the
+    /// controller: reports an apply that a restart cut short, plans the
+    /// configs it did not plan yet, and plans the approved state again.
+    pub fn boot(&mut self) {
+        if let Some(applying) = self
+            .state
+            .read(APPLYING)
+            .and_then(|bytes| serde_json::from_slice::<Applying>(&bytes).ok())
+        {
+            eprintln!(
+                "sewa-agent: the agent stopped while it applied change {}",
+                applying.change_id
+            );
+            let persisted = self.report_outcome(Outcome {
+                approval_id: applying.approval_id,
+                change_id: applying.change_id,
+                status: "failed".to_owned(),
+                plan_hash: applying.plan_hash,
+                log: "the agent stopped while mise applied the change, so the result is \
+                      unknown; the next plan shows the state of the host"
+                    .to_owned(),
+                at: Some(now_ms()),
+            });
+            if persisted {
+                self.state.remove(APPLYING);
+            }
+        }
+        self.plan_changed();
+        if self.current_planned_at.is_none() {
+            self.plan(CURRENT);
         }
     }
 
-    /// Adds the remote config status, the health, and the next queued
-    /// message to a message. Returns the queued message, to queue it again
-    /// if the message is lost.
-    pub fn fill(&mut self, message: &mut AgentToServer) -> Option<CustomMessage> {
+    /// Sends one message with `send`, the exchange with the controller.
+    /// The message carries the remote config status, the health, and the
+    /// oldest report of the outbox, which leaves the outbox only when the
+    /// controller answers. Then the worker takes the answer's config and
+    /// approval.
+    pub fn exchange(
+        &mut self,
+        mut message: AgentToServer,
+        send: impl FnOnce(&AgentToServer) -> Result<ServerToAgent, ExchangeError>,
+    ) -> Result<(), ExchangeError> {
+        self.fill(&mut message);
+        let answer = send(&message)?;
+        if message.custom_message.is_some() {
+            self.outbox.pop();
+        }
+        if let Some(remote) = answer.remote_config {
+            self.receive(remote);
+        }
+        // After the config of the same answer, which the approval may be
+        // about.
+        if let Some(custom) = &answer.custom_message {
+            self.approval(custom);
+        }
+        Ok(())
+    }
+
+    /// Adds the remote config status, the health, and the oldest report of
+    /// the outbox to a message.
+    pub fn fill(&self, message: &mut AgentToServer) {
         if !self.remote_config_hash.is_empty() {
             message.remote_config_status = Some(RemoteConfigStatus {
                 last_remote_config_hash: self.remote_config_hash.clone(),
@@ -68,14 +182,22 @@ impl Worker {
             });
         }
         message.health = self.health.clone();
-        let queued = self.queue.pop_front()?;
-        message.custom_message = Some(queued.clone());
-        Some(queued)
+        message.custom_message = self.outbox.front().cloned();
     }
 
-    /// Takes a new remote config: drops configs the controller no longer
-    /// sends, and plans the ones that changed.
+    /// Takes a new remote config: keeps it on disk, drops configs the
+    /// controller no longer sends, and plans the ones that changed.
     pub fn receive(&mut self, remote: AgentRemoteConfig) {
+        if let Err(error) = self.state.write(REMOTE_CONFIG, &remote.encode_to_vec()) {
+            eprintln!("sewa-agent: cannot keep the config on disk: {error}");
+        }
+        self.take(remote);
+        let names: Vec<&str> = self.configs.keys().map(String::as_str).collect();
+        self.planner.keep_only(&names);
+        self.plan_changed();
+    }
+
+    fn take(&mut self, remote: AgentRemoteConfig) {
         self.remote_config_hash = remote.config_hash;
         self.configs = remote
             .config
@@ -90,8 +212,10 @@ impl Worker {
             .collect();
         self.planned
             .retain(|name, _| self.configs.contains_key(name));
-        let names: Vec<&str> = self.configs.keys().map(String::as_str).collect();
-        self.planner.keep_only(&names);
+    }
+
+    /// Plans each config whose body changed since its last plan.
+    fn plan_changed(&mut self) {
         let changed: Vec<String> = self
             .configs
             .iter()
@@ -117,7 +241,7 @@ impl Worker {
     /// a pinned approver key signed this change and this agent's plan, the
     /// config is the one approved, and a fresh plan still has the approved
     /// hash. Queues the result, and the plan after an apply. Each approval
-    /// is answered once.
+    /// is answered once, across restarts.
     pub fn approval(&mut self, custom: &CustomMessage) {
         if custom.capability != sewa_approval::CAPABILITY
             || custom.r#type != sewa_approval::APPROVAL_TYPE
@@ -131,8 +255,16 @@ impl Worker {
                 return;
             }
         };
-        if !self.answered.insert(signed.approval_id) {
+        if self.answered.contains(&signed.approval_id) {
             return;
+        }
+        self.answered.push(signed.approval_id);
+        if self.answered.len() > ANSWERED_LIMIT {
+            self.answered.remove(0);
+        }
+        let answered = serde_json::to_vec(&self.answered).unwrap_or_default();
+        if let Err(error) = self.state.write(ANSWERED, &answered) {
+            eprintln!("sewa-agent: cannot keep the answered approvals on disk: {error}");
         }
         let (status, plan_hash, log) = self.check_and_apply(&signed);
         eprintln!(
@@ -145,15 +277,25 @@ impl Worker {
             status: status.to_owned(),
             plan_hash,
             log,
+            at: Some(now_ms()),
         };
-        self.queue.push_back(CustomMessage {
+        let replan = status == "applied" || status == "failed" && plan_hash_known(&outcome);
+        // The marker goes only once the result is on disk.
+        if self.report_outcome(outcome) {
+            self.state.remove(APPLYING);
+        }
+        if replan {
+            self.plan(CURRENT);
+        }
+    }
+
+    /// Puts a result in the outbox. Returns whether it reached the disk.
+    fn report_outcome(&mut self, outcome: Outcome) -> bool {
+        self.outbox.push(CustomMessage {
             capability: sewa_approval::CAPABILITY.to_owned(),
             r#type: sewa_approval::RESULT_TYPE.to_owned(),
             data: serde_json::to_vec(&outcome).unwrap_or_default(),
-        });
-        if status == "applied" || status == "failed" && plan_hash_known(&outcome) {
-            self.plan(CURRENT);
-        }
+        })
     }
 
     /// `applied`, `failed`, or `replan`, the fresh plan hash, and the log.
@@ -196,6 +338,17 @@ impl Worker {
                 "the plan changed since the approval".to_owned(),
             );
         }
+        let applying = Applying {
+            approval_id: signed.approval_id,
+            change_id: signed.approval.change_id,
+            plan_hash: Some(plan.plan_hash.clone()),
+        };
+        if let Err(error) = self
+            .state
+            .write(APPLYING, &serde_json::to_vec(&applying).unwrap_or_default())
+        {
+            return refused(format!("cannot write down the apply first: {error}"));
+        }
         let (exit_code, log) = self.planner.apply(CURRENT);
         let status = if exit_code == 0 { "applied" } else { "failed" };
         (status, Some(plan.plan_hash), log)
@@ -205,6 +358,12 @@ impl Worker {
         let (body, hash) = self.configs.get(name)?;
         let plan = self.planner.plan(name, body);
         self.planned.insert(name.to_owned(), hash.clone());
+        if let Err(error) = self.state.write(
+            PLANNED,
+            &serde_json::to_vec(&self.planned).unwrap_or_default(),
+        ) {
+            eprintln!("sewa-agent: cannot keep the planned configs on disk: {error}");
+        }
         let explicit = (name == CURRENT).then(plan::explicit_packages).flatten();
         if name == CURRENT {
             self.current_planned_at = Some(Instant::now());
@@ -218,10 +377,10 @@ impl Worker {
                 .map(|error| format!(", {error}"))
                 .unwrap_or_default()
         );
-        self.queue.push_back(CustomMessage {
+        self.outbox.push(CustomMessage {
             capability: PLAN_CAPABILITY.to_owned(),
             r#type: PLAN_TYPE.to_owned(),
-            data: plan::report(&plan, explicit.as_ref()),
+            data: plan::report(&plan, explicit.as_ref(), now_ms()),
         });
         Some(plan)
     }
@@ -287,9 +446,9 @@ mod tests {
             r#type: PLAN_TYPE.to_owned(),
             data: b"{}".to_vec(),
         };
-        worker.queue.push_back(queued.clone());
+        worker.outbox.push(queued.clone());
         let mut message = AgentToServer::default();
-        assert_eq!(worker.fill(&mut message), Some(queued));
+        worker.fill(&mut message);
         assert_eq!(
             message
                 .remote_config_status
@@ -297,10 +456,9 @@ mod tests {
                 .last_remote_config_hash,
             vec![1, 2]
         );
-        let custom = message.custom_message.unwrap();
-        assert_eq!(custom.capability, PLAN_CAPABILITY);
-        assert_eq!(custom.data, b"{}");
-        assert!(worker.queue.is_empty());
+        assert_eq!(message.custom_message, Some(queued));
+        // It leaves the outbox only once the controller answers.
+        assert_eq!(worker.outbox.len(), 1);
     }
 
     mod approvals {
@@ -385,7 +543,7 @@ exit 1
                     config: Some(AgentConfigMap { config_map }),
                     config_hash: vec![1],
                 });
-                worker.queue.clear();
+                worker.outbox.clear();
                 Self {
                     _root: dir,
                     root,
@@ -421,7 +579,7 @@ exit 1
                     approval,
                     assertion,
                 };
-                self.worker.queue.clear();
+                self.worker.outbox.clear();
                 self.worker.approval(&CustomMessage {
                     capability: sewa_approval::CAPABILITY.to_owned(),
                     r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
@@ -429,7 +587,7 @@ exit 1
                 });
                 let outcome = self
                     .worker
-                    .queue
+                    .outbox
                     .iter()
                     .find(|message| message.capability == sewa_approval::CAPABILITY)
                     .expect("a result");
@@ -450,7 +608,7 @@ exit 1
 
             fn plans_queued(&self) -> usize {
                 self.worker
-                    .queue
+                    .outbox
                     .iter()
                     .filter(|message| message.capability == PLAN_CAPABILITY)
                     .count()
@@ -462,6 +620,241 @@ exit 1
                 assert!(outcome.log.contains(why), "{why} in {:?}", outcome.log);
                 assert!(self.applies().is_empty(), "nothing is applied");
             }
+
+            /// The agent stops and starts again on the same state
+            /// directory, as after a crash or a reboot.
+            fn restart(&mut self) {
+                let state = State::new(self.root.join("state"));
+                let planner = Planner::new(&state.dir, self.root.join("mise"));
+                self.worker = Worker::new(planner, state, self.uid);
+                self.worker.boot();
+            }
+
+            /// The approval message the controller sends, signed.
+            fn signed(&self) -> CustomMessage {
+                let approval = self.approval();
+                let signed = Signed {
+                    approval_id: Uuid::now_v7(),
+                    assertion: self.sign(&approval),
+                    approval,
+                };
+                CustomMessage {
+                    capability: sewa_approval::CAPABILITY.to_owned(),
+                    r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
+                    data: serde_json::to_vec(&signed).unwrap(),
+                }
+            }
+
+            /// Messages to a controller that is down.
+            fn offline(&mut self, times: usize) {
+                for _ in 0..times {
+                    let sent = self
+                        .worker
+                        .exchange(AgentToServer::default(), |_| Err(ExchangeError::Network));
+                    assert_eq!(sent, Err(ExchangeError::Network));
+                }
+            }
+
+            /// Messages to a controller that answers `answer`, until the
+            /// outbox is empty. Returns the reports it received.
+            fn online(&mut self, answer: &ServerToAgent) -> Vec<CustomMessage> {
+                let mut received = Vec::new();
+                for _ in 0..20 {
+                    self.worker
+                        .exchange(AgentToServer::default(), |message| {
+                            received.extend(message.custom_message.clone());
+                            Ok(answer.clone())
+                        })
+                        .unwrap();
+                    if self.worker.outbox.is_empty() {
+                        return received;
+                    }
+                }
+                panic!("the outbox does not empty");
+            }
+        }
+
+        fn at(message: &CustomMessage) -> i64 {
+            let value: serde_json::Value = serde_json::from_slice(&message.data).unwrap();
+            value["at"].as_i64().expect("a time")
+        }
+
+        fn outcomes(received: &[CustomMessage]) -> Vec<Outcome> {
+            received
+                .iter()
+                .filter(|message| message.capability == sewa_approval::CAPABILITY)
+                .map(|message| serde_json::from_slice(&message.data).unwrap())
+                .collect()
+        }
+
+        fn drifted(root: &Path) {
+            fs::write(
+                root.join("plan.json"),
+                r#"{"packages":[{"name":"ripgrep"},{"name":"htop","action":"remove"}]}"#,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn controller_down_at_start_plans_the_last_config_and_buffers() {
+            let mut fixture = Fixture::new();
+            // The host changes while the agent is stopped, and the
+            // controller is down when it starts again.
+            drifted(&fixture.root);
+            fixture.restart();
+            assert_eq!(fixture.plans_queued(), 1, "the boot plan of current");
+            fixture.offline(3);
+            assert_eq!(fixture.worker.outbox.len(), 1);
+            assert!(fixture.applies().is_empty());
+            let planned_at = at(fixture.worker.outbox.front().unwrap());
+            // Health and the config hash come from the config on disk.
+            let mut message = AgentToServer::default();
+            fixture.worker.fill(&mut message);
+            assert_eq!(message.health.unwrap().status, "drift");
+            assert_eq!(
+                message
+                    .remote_config_status
+                    .unwrap()
+                    .last_remote_config_hash,
+                vec![1]
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            let received = fixture.online(&ServerToAgent::default());
+            assert_eq!(received.len(), 1);
+            let report: serde_json::Value = serde_json::from_slice(&received[0].data).unwrap();
+            assert_eq!(report["exit_code"], 2);
+            assert_eq!(at(&received[0]), planned_at);
+            assert!(planned_at < now_ms());
+        }
+
+        #[test]
+        fn controller_down_mid_run_keeps_checking_and_applies_nothing() {
+            let mut fixture = Fixture::new();
+            let signed = fixture.signed();
+            assert!(fixture.online(&ServerToAgent::default()).is_empty());
+            // The controller goes down. The daily checks go on.
+            fixture.offline(2);
+            let later = Instant::now() + DRIFT_INTERVAL;
+            fixture.worker.tick(later);
+            drifted(&fixture.root);
+            fixture.worker.tick(later + DRIFT_INTERVAL);
+            fixture.offline(2);
+            assert_eq!(fixture.plans_queued(), 2);
+            assert!(fixture.applies().is_empty());
+            // It comes back: the reports arrive in order, then the
+            // approval it sends now is the first one the agent can act on.
+            let received = fixture.online(&ServerToAgent::default());
+            let hashes: Vec<String> = received
+                .iter()
+                .map(|message| {
+                    let report: serde_json::Value = serde_json::from_slice(&message.data).unwrap();
+                    report["plan_hash"].as_str().unwrap().to_owned()
+                })
+                .collect();
+            assert_eq!(hashes.len(), 2);
+            assert_ne!(hashes[0], hashes[1]);
+            assert!(at(&received[0]) <= at(&received[1]));
+            assert!(fixture.applies().is_empty());
+            // An approval of the old plan does not apply the drifted one.
+            let answer = ServerToAgent {
+                custom_message: Some(signed),
+                ..Default::default()
+            };
+            let received = fixture.online(&answer);
+            assert_eq!(outcomes(&received)[0].status, "replan");
+            assert!(fixture.applies().is_empty());
+        }
+
+        #[test]
+        fn buffered_reports_replay_in_order_after_a_restart() {
+            let mut fixture = Fixture::new();
+            let answer = ServerToAgent {
+                custom_message: Some(fixture.signed()),
+                ..Default::default()
+            };
+            // The approval arrives, then the controller goes down.
+            fixture
+                .worker
+                .exchange(AgentToServer::default(), |_| Ok(answer.clone()))
+                .unwrap();
+            fixture.offline(1);
+            fixture.worker.tick(Instant::now() + DRIFT_INTERVAL);
+            let before: Vec<CustomMessage> = fixture.worker.outbox.iter().cloned().collect();
+            let kinds: Vec<&str> = before.iter().map(|m| m.capability.as_str()).collect();
+            assert_eq!(
+                kinds,
+                [
+                    PLAN_CAPABILITY,
+                    sewa_approval::CAPABILITY,
+                    PLAN_CAPABILITY,
+                    PLAN_CAPABILITY
+                ]
+            );
+            fixture.restart();
+            // The boot plan goes after what the last run left.
+            let received = fixture.online(&ServerToAgent::default());
+            assert_eq!(received.len(), 5);
+            assert_eq!(received[..4], before[..]);
+            let times: Vec<i64> = received.iter().map(at).collect();
+            assert!(times.is_sorted(), "{times:?}");
+        }
+
+        #[test]
+        fn a_restart_between_apply_and_report_keeps_the_result() {
+            let mut fixture = Fixture::new();
+            let answer = ServerToAgent {
+                custom_message: Some(fixture.signed()),
+                ..Default::default()
+            };
+            fixture
+                .worker
+                .exchange(AgentToServer::default(), |_| Ok(answer.clone()))
+                .unwrap();
+            assert_eq!(fixture.applies().len(), 1);
+            // The agent stops before its next message. The controller
+            // still sends the approval, since it has no result yet.
+            fixture.restart();
+            let received = fixture.online(&answer);
+            assert_eq!(fixture.applies().len(), 1, "applied once");
+            let outcomes = outcomes(&received);
+            assert_eq!(outcomes.len(), 1);
+            assert_eq!(outcomes[0].status, "applied");
+            assert!(outcomes[0].log.contains("would apply"));
+        }
+
+        #[test]
+        fn a_restart_during_the_apply_reports_an_unknown_result() {
+            let mut fixture = Fixture::new();
+            let signed = fixture.signed();
+            let approval: Signed = serde_json::from_slice(&signed.data).unwrap();
+            // What the agent wrote down before mise ran, then it stopped.
+            let state = &fixture.worker.state;
+            state
+                .write(
+                    ANSWERED,
+                    &serde_json::to_vec(&[approval.approval_id]).unwrap(),
+                )
+                .unwrap();
+            let applying = Applying {
+                approval_id: approval.approval_id,
+                change_id: approval.approval.change_id,
+                plan_hash: Some("p".to_owned()),
+            };
+            state
+                .write(APPLYING, &serde_json::to_vec(&applying).unwrap())
+                .unwrap();
+            fixture.restart();
+            let answer = ServerToAgent {
+                custom_message: Some(signed),
+                ..Default::default()
+            };
+            let received = fixture.online(&answer);
+            assert!(fixture.applies().is_empty(), "not applied again");
+            let outcomes = outcomes(&received);
+            assert_eq!(outcomes.len(), 1);
+            assert_eq!(outcomes[0].status, "failed");
+            assert!(outcomes[0].log.contains("stopped"), "{:?}", outcomes[0].log);
+            assert!(fixture.worker.state.read(APPLYING).is_none());
         }
 
         #[test]
@@ -616,7 +1009,7 @@ exit 1
             // The fresh plan goes to the controller for a new approval.
             let report = fixture
                 .worker
-                .queue
+                .outbox
                 .iter()
                 .find(|message| message.capability == PLAN_CAPABILITY)
                 .expect("a plan report");

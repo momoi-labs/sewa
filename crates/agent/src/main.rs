@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 
 mod opamp;
+mod outbox;
 mod plan;
 mod state;
 mod worker;
@@ -196,38 +197,38 @@ fn run(args: RunArgs) -> Result<(), String> {
     }
     let planner = Planner::new(&state.dir, args.mise);
     let mut worker = Worker::new(planner, state, uid);
+    // Plans the last approved state on start, with or without the
+    // controller.
+    worker.boot();
     let mut sequence_num: u64 = 0;
     let mut failing = false;
     loop {
-        let mut message = opamp::message(uid, sequence_num, &host);
-        let report = worker.fill(&mut message);
-        match opamp::exchange(&agent, &url, &credential, &message) {
-            Ok(answer) => {
+        let message = opamp::message(uid, sequence_num, &host);
+        match worker.exchange(message, |message| {
+            opamp::exchange(&agent, &url, &credential, message)
+        }) {
+            Ok(()) => {
                 if failing {
                     eprintln!("sewa-agent: the controller answers again");
                 }
                 failing = false;
-                if let Some(remote) = answer.remote_config {
-                    worker.receive(remote);
-                }
-                // After the config of the same answer, which the approval
-                // may be about.
-                if let Some(custom) = &answer.custom_message {
-                    worker.approval(custom);
-                }
             }
             Err(error) => {
-                eprintln!("sewa-agent: cannot report: {error}");
-                failing = true;
-                if let Some(queued) = report {
-                    worker.queue.push_front(queued);
+                // Once per outage: the agent keeps checking the host and
+                // keeps its reports until the controller answers.
+                if !failing {
+                    eprintln!(
+                        "sewa-agent: cannot report: {error}; reports wait in the outbox ({} now)",
+                        worker.outbox.len()
+                    );
                 }
+                failing = true;
             }
         }
         sequence_num = sequence_num.wrapping_add(1);
         worker.tick(std::time::Instant::now());
-        // Queued messages go out one per message, without waiting.
-        if failing || worker.queue.is_empty() {
+        // Buffered reports go out one per message, without waiting.
+        if failing || worker.outbox.is_empty() {
             std::thread::sleep(POLL_INTERVAL);
         }
     }
