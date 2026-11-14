@@ -22,6 +22,7 @@ pub mod install;
 pub mod opamp;
 pub mod secret;
 pub mod status;
+pub mod web;
 pub mod whois;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -56,6 +57,8 @@ pub fn router(state: AppState) -> Router {
     ));
     let api = Router::new()
         .route("/hosts", get(hosts::list).post(hosts::create))
+        .route("/hosts/{id}", get(hosts::get))
+        .route("/hosts/{id}/events", get(hosts::events))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             hosts::require_admin,
@@ -69,5 +72,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/files/{name}", get(install::serve_file))
         .route("/install", get(install::serve_script).with_state(script))
+        .fallback(web::serve)
         .with_state(state)
 }
