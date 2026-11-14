@@ -76,7 +76,7 @@ export function HostPage() {
           </div>
           {host.isError && <ErrorAlert error={host.error} onRetry={() => void host.refetch()} />}
           <Card className="detail-tabs">
-            <Tabs defaultValue="summary">
+            <Tabs defaultValue="summary" data-shadow-style="none">
               <TabsList aria-label="Host details">
                 <TabsTrigger value="summary">Summary</TabsTrigger>
                 <TabsTrigger value="desired">Desired state</TabsTrigger>
