@@ -11,7 +11,13 @@ sewa is in the design phase. There is no code yet.
 
 - Run a node agent, written in Rust, as a system service on each machine:
   systemd on Linux, launchd on macOS.
-- Run a controller that holds the desired state and the approval flow.
+- Run a controller that holds the desired state and the approval flow. The
+  controller stores the desired state, its history as events, and the
+  approvals in its database. An encrypted backup of that database is kept
+  off the host.
+- Accept approvals from the web, signed with a passkey, or from the CLI,
+  signed with an SSH key. The private key never sits on the controller, so
+  the controller cannot approve on its own.
 - Let the agent fetch its desired state and run a plan with mise bootstrap
   (`mise bootstrap plan`). The agent reports drift. It applies only a plan
   that a person approved.
@@ -23,9 +29,8 @@ sewa is in the design phase. There is no code yet.
 
 ## What sewa will not do
 
-- Hold any network's configuration, inventory, hostnames, or addresses.
-  These live in a separate, private configuration repository that the
-  controller reads.
+- Hold any network's configuration, inventory, hostnames, or addresses in
+  this repository. These live in the controller's database.
 - Manage users' personal dotfiles or per-user tools. Those stay in each
   user's own dotfiles.
 - Store secrets.
