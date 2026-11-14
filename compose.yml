@@ -1,0 +1,24 @@
+# Local development: PostgreSQL for the controller and its tests.
+#
+# It uses host networking and listens on 127.0.0.1 only, so Compose creates
+# no Docker network. Hosts that run many Compose projects run out of network
+# address pools otherwise. The credentials are for this machine only.
+services:
+  postgres:
+    image: postgres:18
+    network_mode: host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=55441"]
+    environment:
+      POSTGRES_USER: sewa
+      POSTGRES_PASSWORD: sewa
+      POSTGRES_DB: sewa
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "55441", "-U", "sewa"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres:

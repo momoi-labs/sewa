@@ -5,7 +5,8 @@ machines over time and keeps each one as it was declared.
 
 ## Status
 
-sewa is in the design phase. There is no code yet.
+sewa is early. Hosts can enroll and report their status. See
+[docs/api.md](docs/api.md).
 
 ## What sewa will do
 
