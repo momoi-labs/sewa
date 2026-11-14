@@ -1,5 +1,6 @@
 //! What the agent keeps on disk: the controller's address, the credential,
-//! and the instance UID, in one private directory.
+//! the instance UID, and the approver keys pinned at install, in one
+//! private directory.
 //!
 //! - Linux: `/var/lib/sewa`, as root.
 //! - macOS: `~/Library/Application Support/sewa` of the user the agent
@@ -10,6 +11,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use sewa_approval::Pinned;
 use uuid::Uuid;
 
 /// The directory of this system, for the user the agent runs as.
@@ -33,6 +35,7 @@ pub struct State {
 const SERVER: &str = "server";
 const CREDENTIAL: &str = "credential";
 const INSTANCE_UID: &str = "instance_uid";
+const APPROVERS: &str = "approvers.json";
 
 impl State {
     pub fn new(dir: PathBuf) -> Self {
@@ -62,6 +65,26 @@ impl State {
             Ok(text.trim().to_owned())
         };
         Ok((read(SERVER)?, read(CREDENTIAL)?))
+    }
+
+    /// Pins the approver keys, replacing the keys pinned before. Only the
+    /// install does this; nothing the controller sends changes them.
+    pub fn store_approvers(&self, pinned: &Pinned) -> io::Result<()> {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.dir)?;
+        let json = serde_json::to_vec_pretty(pinned).map_err(io::Error::other)?;
+        write_private(&self.dir.join(APPROVERS), &json)
+    }
+
+    /// The pinned approver keys. None pinned, or a file that does not
+    /// read, means no key: the agent applies nothing.
+    pub fn approvers(&self) -> Pinned {
+        fs::read(self.dir.join(APPROVERS))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     /// Reads the instance UID, or creates a UUIDv7 and keeps it, so the
@@ -133,6 +156,21 @@ mod tests {
                 "secret".to_owned()
             )
         );
+    }
+
+    #[test]
+    fn pins_the_approver_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let state = State::new(root.path().join("sewa"));
+        assert!(state.approvers().keys.is_empty());
+        let pinned = Pinned {
+            rp_id: "sewa.example".to_owned(),
+            origin: "https://sewa.example".to_owned(),
+            keys: vec![sewa_approval::testing::Authenticator::new(7).approver("admin@example.com")],
+        };
+        state.store_approvers(&pinned).unwrap();
+        assert_eq!(state.approvers(), pinned);
+        assert_eq!(mode(&state.dir.join(APPROVERS)), 0o600);
     }
 
     #[test]

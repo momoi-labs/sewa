@@ -14,7 +14,9 @@ path = "src/main.rs"
 clap.workspace = true
 nix.workspace = true
 prost.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sewa-approval = { path = "../approval" }
 sha2.workspace = true
 ureq.workspace = true
 uuid = { workspace = true, features = ["v7"] }
@@ -24,6 +26,7 @@ prost-build.workspace = true
 protox.workspace = true
 
 [dev-dependencies]
+sewa-approval = { path = "../approval", features = ["testing"] }
 tempfile.workspace = true
 
 [lints]

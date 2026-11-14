@@ -314,6 +314,10 @@ pub struct Adjustment {
 pub struct Drift {
     /// `in_sync` (exit code 0), `drift` (2), or `error` (1 or another).
     pub status: &'static str,
+    /// Ignore hid this drift. It shows again when the drift changes.
+    pub ignored: bool,
+    /// The open revert change of the host, if any.
+    pub revert_change: Option<Uuid>,
     #[serde(flatten)]
     pub plan: changes::Plan,
 }
@@ -324,6 +328,8 @@ pub struct Undeclared {
     /// The explicitly installed packages that the host's approved items do
     /// not declare, by name.
     pub packages: Vec<String>,
+    /// Undeclared packages that Ignore hid, left out of `packages`.
+    pub ignored_count: usize,
     pub explicit_count: usize,
     pub reported_at: DateTime<Utc>,
 }
@@ -381,16 +387,28 @@ pub async fn state(
         Option<String>,
         Option<Vec<String>>,
         Option<DateTime<Utc>>,
+        Option<serde_json::Value>,
+        Option<Uuid>,
     );
     let row: Option<Explicit> = sqlx::query_as(
-        "SELECT health, explicit_manager, explicit_packages, explicit_reported_at
+        "SELECT health, explicit_manager, explicit_packages, explicit_reported_at,
+                drift_ignored,
+                (SELECT c.id FROM changes c WHERE c.status = 'draft' AND c.revert_host = hosts.id)
          FROM hosts WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut *connection)
     .await?;
-    let (health, manager, explicit, reported_at) =
+    let (health, manager, explicit, reported_at, ignored, revert_change) =
         row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
+    let ignored = ignored.unwrap_or_default();
+    let ignored_plan = ignored["plan_hash"].as_str();
+    let ignored_packages: Vec<&str> = ignored["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
     let (approved, proposed) = desired::states(&mut connection).await?;
     let items = approved.host_items(id);
     let config = desired::render(&items);
@@ -407,21 +425,24 @@ pub async fn state(
                 2 => "drift",
                 _ => "error",
             },
+            ignored: plan.exit_code == 2 && ignored_plan == Some(plan.plan_hash.as_str()),
+            revert_change,
             plan,
         }
     });
     let undeclared = match (manager, explicit, reported_at) {
         (Some(manager), Some(explicit), Some(reported_at)) => {
             let declared = desired::declared_packages(&items, &manager);
-            let mut packages: Vec<String> = explicit
+            let (hidden, mut packages): (Vec<String>, Vec<String>) = explicit
                 .iter()
                 .filter(|package| !declared.contains(*package))
                 .cloned()
-                .collect();
+                .partition(|package| ignored_packages.contains(&package.as_str()));
             packages.sort();
             Some(Undeclared {
                 manager,
                 packages,
+                ignored_count: hidden.len(),
                 explicit_count: explicit.len(),
                 reported_at,
             })

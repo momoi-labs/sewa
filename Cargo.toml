@@ -17,6 +17,7 @@ clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.4"
 http-body-util = "0.1"
 nix = { version = "0.30", features = ["fs", "hostname", "user"] }
+p256 = { version = "0.14", features = ["ecdsa", "pkcs8"] }
 prost = "0.14"
 prost-build = { version = "0.14", default-features = false }
 protox = "0.10"

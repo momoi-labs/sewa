@@ -99,7 +99,7 @@ export function HostPage() {
                 {state.isError && !state.data ? (
                   <ErrorAlert error={state.error} onRetry={() => void state.refetch()} />
                 ) : state.data ? (
-                  <HostDrift state={state.data} />
+                  host.data ? <HostDrift host={host.data} state={state.data} /> : <Skeleton />
                 ) : (
                   <Skeleton />
                 )}
@@ -158,6 +158,10 @@ function Summary({ host, now }: { host: Host; now: number }) {
 }
 
 /** One sentence for each kind of event. */
+function by(event: HostEvent): string {
+  return typeof event.data.by === 'string' ? event.data.by : 'Someone';
+}
+
 export function describeEvent(event: HostEvent): string {
   switch (event.kind) {
     case 'host.created': {
@@ -174,6 +178,22 @@ export function describeEvent(event: HostEvent): string {
       return 'A draft change edits this host';
     case 'drift.detected':
       return 'The host drifted from its approved state';
+    case 'change.approved':
+      return `${by(event)} approved a change for this host`;
+    case 'plan.applied':
+      return 'The agent applied an approved change';
+    case 'apply.failed':
+      return 'The agent did not apply an approved change';
+    case 'apply.replan':
+      return 'The plan changed before the apply, so the change needs a new approval';
+    case 'drift.reverted':
+      return `${by(event)} opened a change to revert the drift`;
+    case 'drift.adopted':
+      return typeof event.data.package === 'string'
+        ? `${by(event)} adopted ${event.data.package} in the draft`
+        : `${by(event)} adopted a package in the draft`;
+    case 'drift.ignored':
+      return `${by(event)} ignored the drift`;
     default:
       return event.kind;
   }

@@ -2,12 +2,14 @@
 //! from `GET /files/{name}`, and the one-line command the API returns.
 //!
 //! Adapted from pg-yard's `crates/cell/src/install.rs` and
-//! `crates/cell/src/probe_files.rs`. The script holds only the controller's
-//! address and the checksums of the binaries, so the controller renders it
-//! once. The install token is the script's argument: it never goes into a
-//! URL, so no access log sees it. The script downloads `sewa-agent` for the
-//! machine's OS and architecture, checks it against the SHA-256 in the
-//! script, enrolls, and installs the service:
+//! `crates/cell/src/probe_files.rs`. The script holds the controller's
+//! address, the checksums of the binaries, and the approver keys of the
+//! moment, which it pins into the agent: an agent applies only what one of
+//! them signed, and only the install pins keys. The install token is the
+//! script's argument: it never goes into a URL, so no access log sees it.
+//! The script downloads `sewa-agent` for the machine's OS and architecture,
+//! checks it against the SHA-256 in the script, enrolls, and installs the
+//! service:
 //!
 //! - Linux: a systemd unit that runs the agent as root.
 //! - macOS: a launchd daemon that runs the agent as a user the script asks
@@ -22,6 +24,7 @@ use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use sewa_approval::Pinned;
 use sha2::{Digest, Sha256};
 
 /// The machines the install script installs on, as Rust targets.
@@ -94,12 +97,19 @@ pub async fn serve_file(
     }
 }
 
-/// `GET /install`: the script, as text, so a browser shows it too.
-pub async fn serve_script(State(script): State<Bytes>) -> impl IntoResponse {
-    (
+/// `GET /install`: the script, as text, so a browser shows it too. It is
+/// rendered for each request, with the approver keys of that moment.
+pub async fn serve_script(
+    State(state): State<crate::AppState>,
+) -> crate::error::ApiResult<Response> {
+    let mut connection = state.pool.acquire().await?;
+    let pinned = crate::passkeys::pinned(&mut connection, &state.public_url).await?;
+    let script = script(&state.public_url, &state.agent_files.sums(), &pinned);
+    Ok((
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         script,
     )
+        .into_response())
 }
 
 /// Quotes a value for a POSIX shell: inside single quotes nothing expands,
@@ -117,9 +127,10 @@ pub fn command(public_url: &str, token: &str) -> String {
 }
 
 /// The install script for a controller at `public_url`, which serves
-/// binaries with `sums`.
-pub fn script(public_url: &str, sums: &[(&str, String)]) -> String {
+/// binaries with `sums`, and whose agents trust the `pinned` keys.
+pub fn script(public_url: &str, sums: &[(&str, String)], pinned: &Pinned) -> String {
     let server = sh_quote(public_url);
+    let approvers = sh_quote(&serde_json::to_string(pinned).expect("keys serialize"));
     let files_url = sh_quote(&format!("{public_url}/files"));
     let sums: String = sums
         .iter()
@@ -134,6 +145,8 @@ set -eu
 
 server={server}
 bin=/usr/local/bin/sewa-agent
+# The approver keys: the agent applies only what one of them signed.
+approvers={approvers}
 
 fail() {{
   echo "sewa: $*" >&2
@@ -150,6 +163,7 @@ sha256() {{
 
 install_linux() {{
   "$bin" enroll --server "$server" --token "$token"
+  printf '%s\n' "$approvers" | "$bin" pin
   cat >/etc/systemd/system/sewa-agent.service <<'UNIT'
 [Unit]
 Description=sewa agent
@@ -184,6 +198,7 @@ install_macos() {{
   id -u "$user" >/dev/null 2>&1 || fail "no user $user"
   home=$(dscl . -read "/Users/$user" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')
   sudo -H -u "$user" "$bin" enroll --server "$server" --token "$token"
+  printf '%s\n' "$approvers" | sudo -H -u "$user" "$bin" pin
   plist=/Library/LaunchDaemons/sewa.agent.plist
   cat >"$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -279,6 +294,7 @@ mod tests {
         let script = script(
             "http://sewa.example:8080",
             &[("x86_64-unknown-linux-musl", "ab12".to_owned())],
+            &Pinned::default(),
         );
         assert!(script.starts_with("#!/bin/sh\n"));
         assert!(script.contains("\nserver='http://sewa.example:8080'\n"));
@@ -291,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_script_parses_and_refuses_to_run_without_a_token() {
-        let script = script("http://sewa.example:8080", &[]);
+        let script = script("http://sewa.example:8080", &[], &Pinned::default());
         let parsed = sh(&["-n"], &script);
         assert!(
             parsed.status.success(),
@@ -301,6 +317,40 @@ mod tests {
         let run = sh(&["-s", "--"], &script);
         assert!(!run.status.success());
         assert!(String::from_utf8_lossy(&run.stderr).contains("install token"));
+    }
+
+    #[test]
+    fn the_script_pins_the_approver_keys() {
+        let pinned = Pinned {
+            rp_id: "sewa.example".to_owned(),
+            origin: "https://sewa.example".to_owned(),
+            keys: vec![sewa_approval::Approver {
+                id: "a'b".to_owned(),
+                public_key: "key".to_owned(),
+                login: "admin@example.com".to_owned(),
+            }],
+        };
+        let script = script("https://sewa.example", &[], &pinned);
+        assert!(script.contains(
+            r#"approvers='{"rp_id":"sewa.example","origin":"https://sewa.example","keys":[{"id":"a'\''b","public_key":"key","login":"admin@example.com"}]}'"#
+        ));
+        assert!(script.contains("printf '%s\\n' \"$approvers\" | \"$bin\" pin\n"));
+        // The shell reads the value back as the JSON.
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "{}\nprintf %s \"$approvers\"",
+                    script
+                        .lines()
+                        .find(|line| line.starts_with("approvers="))
+                        .unwrap()
+                ),
+            ])
+            .output()
+            .unwrap();
+        let read: Pinned = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(read, pinned);
     }
 
     #[test]

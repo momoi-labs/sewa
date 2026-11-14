@@ -2,7 +2,9 @@
 //! specification's plain HTTP transport, which polls instead of holding a
 //! WebSocket. Adapted from pg-yard's `crates/agent/src/opamp.rs`. The
 //! controller sends mise configs as remote config; the agent sends their
-//! plans back as `io.sewa.plan` custom messages.
+//! plans back as `io.sewa.plan` custom messages. Approvals come as
+//! `io.sewa.approval` custom messages, and apply results go back on the
+//! same capability.
 
 use std::fmt;
 use std::time::Duration;
@@ -114,7 +116,10 @@ pub fn message(instance_uid: Uuid, sequence_num: u64, host: &Host) -> AgentToSer
             | AgentCapabilities::ReportsRemoteConfig as u64
             | AgentCapabilities::ReportsHealth as u64,
         custom_capabilities: Some(proto::CustomCapabilities {
-            capabilities: vec![PLAN_CAPABILITY.to_owned()],
+            capabilities: vec![
+                PLAN_CAPABILITY.to_owned(),
+                sewa_approval::CAPABILITY.to_owned(),
+            ],
         }),
         ..Default::default()
     }

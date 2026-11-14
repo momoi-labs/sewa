@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, FromRef};
 use axum::middleware;
 use axum::routing::{get, post};
@@ -14,14 +13,17 @@ use sqlx::migrate::Migrator;
 use crate::install::AgentFiles;
 use crate::whois::WhoIs;
 
+pub mod approvals;
 pub mod changes;
 pub mod desired;
+pub mod drift;
 pub mod enroll;
 pub mod error;
 pub mod events;
 pub mod hosts;
 pub mod install;
 pub mod opamp;
+pub mod passkeys;
 pub mod roles;
 pub mod secret;
 pub mod status;
@@ -52,23 +54,24 @@ impl FromRef<AppState> for Arc<AgentFiles> {
 const OPAMP_LIMIT: usize = 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
-    // Rendered once: the script holds the controller's constants and no
-    // secret.
-    let script = Bytes::from(install::script(
-        &state.public_url,
-        &state.agent_files.sums(),
-    ));
     let api = Router::new()
         .route("/hosts", get(hosts::list).post(hosts::create))
         .route("/hosts/{id}", get(hosts::get))
         .route("/hosts/{id}/events", get(hosts::events))
         .route("/hosts/{id}/state", get(hosts::state))
+        .route("/hosts/{id}/drift/revert", post(drift::revert))
+        .route("/hosts/{id}/drift/adopt", post(drift::adopt))
+        .route("/hosts/{id}/drift/ignore", post(drift::ignore))
+        .route("/passkeys", get(passkeys::list).post(passkeys::register))
+        .route("/passkeys/options", post(passkeys::options))
         .route("/roles", get(roles::list).post(roles::create))
         .route("/roles/{id}", get(roles::get))
         .route("/changes", get(changes::list))
         .route("/changes/draft/edits", post(changes::add_edit))
         .route("/changes/{id}", get(changes::get))
         .route("/changes/{id}/discard", post(changes::discard))
+        .route("/changes/{id}/approval", post(approvals::options))
+        .route("/changes/{id}/approve", post(approvals::approve))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             hosts::require_admin,
@@ -81,7 +84,7 @@ pub fn router(state: AppState) -> Router {
             post(opamp::exchange).layer(DefaultBodyLimit::max(OPAMP_LIMIT)),
         )
         .route("/files/{name}", get(install::serve_file))
-        .route("/install", get(install::serve_script).with_state(script))
+        .route("/install", get(install::serve_script))
         .fallback(web::serve)
         .with_state(state)
 }

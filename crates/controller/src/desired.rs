@@ -385,7 +385,7 @@ pub fn declared_packages(items: &BTreeMap<Key, String>, manager: &str) -> BTreeS
 /// The draft change and its edits in order, if there is a draft.
 pub async fn draft(connection: &mut PgConnection) -> sqlx::Result<Option<(Uuid, Vec<Edit>)>> {
     let Some(id): Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM changes WHERE status = 'draft'")
+        sqlx::query_scalar("SELECT id FROM changes WHERE status = 'draft' AND revert_host IS NULL")
             .fetch_optional(&mut *connection)
             .await?
     else {
@@ -417,6 +417,72 @@ pub async fn states(connection: &mut PgConnection) -> sqlx::Result<(State, Optio
         (id, proposed)
     });
     Ok((approved, proposed))
+}
+
+/// Writes one edit into the approved tables, as [`State::apply`] does in
+/// memory.
+pub async fn save(connection: &mut PgConnection, edit: &Edit) -> sqlx::Result<()> {
+    let query = match edit {
+        Edit::RoleItemSet {
+            role,
+            kind,
+            name,
+            version,
+        } => sqlx::query(
+            "INSERT INTO role_items (role_id, kind, name, version) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (role_id, kind, name) DO UPDATE SET version = $4",
+        )
+        .bind(role)
+        .bind(kind.as_str())
+        .bind(name)
+        .bind(version),
+        Edit::RoleItemRemove { role, kind, name } => {
+            sqlx::query("DELETE FROM role_items WHERE role_id = $1 AND kind = $2 AND name = $3")
+                .bind(role)
+                .bind(kind.as_str())
+                .bind(name)
+        }
+        Edit::HostRoleAdd { host, role } => sqlx::query(
+            "INSERT INTO host_roles (host_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(host)
+        .bind(role),
+        Edit::HostRoleRemove { host, role } => {
+            sqlx::query("DELETE FROM host_roles WHERE host_id = $1 AND role_id = $2")
+                .bind(host)
+                .bind(role)
+        }
+        Edit::HostItemSet {
+            host,
+            kind,
+            name,
+            version,
+        } => sqlx::query(
+            "INSERT INTO host_adjustments (host_id, kind, name, action, version)
+             VALUES ($1, $2, $3, 'set', $4)
+             ON CONFLICT (host_id, kind, name) DO UPDATE SET action = 'set', version = $4",
+        )
+        .bind(host)
+        .bind(kind.as_str())
+        .bind(name)
+        .bind(version),
+        Edit::HostItemRemove { host, kind, name } => sqlx::query(
+            "INSERT INTO host_adjustments (host_id, kind, name, action, version)
+             VALUES ($1, $2, $3, 'remove', NULL)
+             ON CONFLICT (host_id, kind, name) DO UPDATE SET action = 'remove', version = NULL",
+        )
+        .bind(host)
+        .bind(kind.as_str())
+        .bind(name),
+        Edit::HostItemReset { host, kind, name } => sqlx::query(
+            "DELETE FROM host_adjustments WHERE host_id = $1 AND kind = $2 AND name = $3",
+        )
+        .bind(host)
+        .bind(kind.as_str())
+        .bind(name),
+    };
+    query.execute(connection).await?;
+    Ok(())
 }
 
 /// The configs the controller sends a host, by name: `current` always, and

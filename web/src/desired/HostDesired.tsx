@@ -11,6 +11,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Spinner,
   StatusBadge,
   type StatusTone,
   Table,
@@ -20,15 +21,25 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  useToast,
 } from '@momoi-labs/kiso-react';
-import { useQuery } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 
-import { type Adjustment, type Host, type HostState, type Item, rolesQuery } from '../api';
+import {
+  type Adjustment,
+  type Host,
+  type HostState,
+  ignoreDrift,
+  type Item,
+  revertDrift,
+  rolesQuery,
+} from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { Unknown } from '../components/Unknown';
 import { formatDateTime } from '../format';
+import { AdoptDialog } from './AdoptDialog';
 import { compareItems, compareNamed } from './compare';
 import { DifferenceBadge } from './DifferenceBadge';
 import { DraftNotice } from './DraftNotice';
@@ -218,18 +229,44 @@ const health: Record<string, { tone: StatusTone; label: string }> = {
 };
 
 /** Whether the host matches its approved state, the plan that would fix
- *  it, and the packages installed outside any role. */
-export function HostDrift({ state }: { state: HostState }) {
+ *  it, and the packages installed outside any role. Revert, Adopt and
+ *  Ignore act on the drift. */
+export function HostDrift({ host, state }: { host: Host; state: HostState }) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [adopting, setAdopting] = useState<string | null>(null);
   const drift = state.drift;
   const status = drift ? health[drift.status] : null;
   const undeclared = state.undeclared;
+  const revert = useMutation({
+    mutationFn: () => revertDrift(host.id),
+    onSuccess: async (change) => {
+      await queryClient.invalidateQueries({ queryKey: ['changes'] });
+      await navigate({ to: '/changes/$changeId', params: { changeId: change.id } });
+    },
+  });
+  const ignore = useMutation({
+    mutationFn: () => ignoreDrift(host.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['hosts'] });
+      toast('success', 'Drift ignored', 'It shows again when the drift changes or another package appears.');
+    },
+  });
+  const drifted = drift?.status === 'drift' && !drift.ignored;
+  const hasUndeclared = (undeclared?.packages.length ?? 0) > 0;
   return (
     <div className="stack">
+      {(revert.isError || ignore.isError) && <ErrorAlert error={revert.error ?? ignore.error} />}
       <KV>
         <KVKey>Health</KVKey>
         <KVValue>
           {status ? (
-            <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+            <div className="row-wrap">
+              <StatusBadge tone={drift?.ignored ? 'neutral' : status.tone}>
+                {drift?.ignored ? `${status.label}, ignored` : status.label}
+              </StatusBadge>
+            </div>
           ) : (
             <Unknown reason="The agent has not planned the approved state yet" />
           )}
@@ -240,8 +277,48 @@ export function HostDrift({ state }: { state: HostState }) {
         </KVValue>
       </KV>
 
+      {(drift?.status === 'drift' || hasUndeclared || drift?.revert_change) && (
+        <div className="row-wrap">
+          {drift?.revert_change ? (
+            <Link to="/changes/$changeId" params={{ changeId: drift.revert_change }}>
+              Open the revert change
+            </Link>
+          ) : (
+            drift?.status === 'drift' && (
+              <Button
+                size="sm"
+                variant="primary"
+                aria-busy={revert.isPending}
+                onClick={() => {
+                  if (!revert.isPending) revert.mutate();
+                }}
+              >
+                {revert.isPending && <Spinner size="sm" />}
+                Revert
+              </Button>
+            )
+          )}
+          {(drifted || hasUndeclared) && (
+            <Button
+              size="sm"
+              aria-busy={ignore.isPending}
+              onClick={() => {
+                if (!ignore.isPending) ignore.mutate();
+              }}
+            >
+              {ignore.isPending && <Spinner size="sm" />}
+              Ignore
+            </Button>
+          )}
+        </div>
+      )}
+
       <h3 className="t-h3">Plan to fix the drift</h3>
-      <p className="muted">The agent plans the approved state on start and once a day. It never applies the plan.</p>
+      <p className="muted">
+        The agent plans the approved state on start and once a day. Revert opens a change that applies this plan once
+        you approve it.
+        {drift?.ignored && ' Ignore hid this drift until it changes.'}
+      </p>
       <PlanView plan={drift} waiting="The agent plans the approved state when it starts, then once a day." />
 
       <h3 className="t-h3">Undeclared packages</h3>
@@ -258,6 +335,8 @@ export function HostDrift({ state }: { state: HostState }) {
             {undeclared.packages.length} of {undeclared.explicit_count} packages installed explicitly with{' '}
             <span className="mono">{undeclared.manager}</span> are in no role or adjustment. Listed{' '}
             {formatDateTime(undeclared.reported_at)}.
+            {undeclared.ignored_count > 0 &&
+              ` Ignore hides ${undeclared.ignored_count === 1 ? '1 more' : `${undeclared.ignored_count} more`}.`}
           </p>
           {undeclared.packages.length > 0 && (
             <TableFrame frame="none">
@@ -266,6 +345,7 @@ export function HostDrift({ state }: { state: HostState }) {
                   <TableRow>
                     <TableHead>Package</TableHead>
                     <TableHead>Manager</TableHead>
+                    <TableHead aria-label="Actions" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -273,6 +353,11 @@ export function HostDrift({ state }: { state: HostState }) {
                     <TableRow key={name}>
                       <TableCell className="mono">{name}</TableCell>
                       <TableCell className="mono">{undeclared.manager}</TableCell>
+                      <TableCell>
+                        <Button size="sm" variant="ghost" aria-label={`Adopt ${name}`} onClick={() => setAdopting(name)}>
+                          Adopt
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -281,6 +366,7 @@ export function HostDrift({ state }: { state: HostState }) {
           )}
         </>
       )}
+      <AdoptDialog host={host} pkg={adopting} onClose={() => setAdopting(null)} />
     </div>
   );
 }

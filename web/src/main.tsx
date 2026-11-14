@@ -1,4 +1,5 @@
 import '@momoi-labs/kiso-react/styles.css';
+import './product.css';
 
 import { Toasts } from '@momoi-labs/kiso-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

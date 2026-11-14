@@ -20,6 +20,7 @@ getrandom.workspace = true
 prost.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
+sewa-approval = { path = "../approval" }
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
@@ -34,6 +35,7 @@ prost-build.workspace = true
 protox.workspace = true
 
 [dev-dependencies]
+sewa-approval = { path = "../approval", features = ["testing"] }
 http-body-util.workspace = true
 tower.workspace = true
 

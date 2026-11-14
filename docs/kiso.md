@@ -14,15 +14,15 @@ contract disagree, the contract wins and this file has a bug.
 
 | What | Where |
 | --- | --- |
-| Screens | `web/src/hosts/`, `web/src/desired/` |
-| Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/` |
-| Product CSS | None. |
+| Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
+| Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
+| Product CSS | `web/src/product.css`: only sizes Kiso leaves to the product, such as a LogView height. |
 
 ## Product components
 
 | Component | Use |
 | --- | --- |
-| `Shell` | The application shell with the Hosts, Roles and Changes destinations and the theme selector. |
+| `Shell` | The application shell with the Hosts, Roles, Changes and Passkeys destinations and the theme selector. |
 | `HostStatusBadge` | A host's status: waiting, connected, or disconnected. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
 | `Unknown` | A missing value: a muted dash with a tooltip that says why. |
@@ -36,6 +36,11 @@ contract disagree, the contract wins and this file has a bug.
 | `ItemsTable` | Items with the approved version beside the draft's. |
 | `PlanView` | A mise bootstrap plan as a table, removals first and in danger. |
 | `ChangeStatusBadge` | A change's status: draft, approved, or discarded. |
+| `ApplyResultBadge` | What a host did with an approval: waiting, applied, failed, or needs re-approval. |
+| `PasskeyError` | A failed passkey prompt, or an API failure through `ErrorAlert`. |
+| `AddPasskeyDialog` | Names a passkey, then lets the browser create it. |
+| `ApproveDialog` | Shows the plans an approval signs, then signs them with a passkey. |
+| `AdoptDialog` | Adds an undeclared package to a role or to the host, in the draft. |
 
 ## Product rules
 
@@ -59,6 +64,10 @@ contract disagree, the contract wins and this file has a bug.
 | Changes (`/changes`) | List-detail, separate screens: the list screen. |
 | Change (`/changes/$changeId`) | List-detail, separate screens: the detail screen. Host plans sit side by side in a PaneGrid. |
 | Discard a draft | Destructive actions: a confirmation dialog. |
+| Passkeys (`/passkeys`) | CRUD: a list, with each passkey created in a dialog. |
+| Approve a change | Confirmations: a dialog that states what is signed and applied, and names the action. |
+| Adopt a package | CRUD: a small edit made in a dialog. |
+| Revert and Ignore drift | Plain actions on the host's Drift tab. Revert opens a change, which still needs an approval; Ignore only hides. |
 
 ## Exceptions
 
