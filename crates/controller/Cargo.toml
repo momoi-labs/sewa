@@ -1,0 +1,21 @@
+[package]
+name = "sewa-controller"
+description = "The server side of sewa: holds the desired state and the approvals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sewa-controller"
+path = "src/main.rs"
+
+[dependencies]
+prost.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protox.workspace = true
+
+[lints]
+workspace = true
