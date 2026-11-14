@@ -400,3 +400,47 @@ async fn serves_the_script_and_the_binaries(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_host_reads_with_its_events_newest_first(pool: PgPool) {
+    let app = app(pool);
+    let (id, token) = create_host(&app, "node-1").await;
+    enroll(&app, NODE, &token).await;
+
+    let (status, host) = json_call(&app, ADMIN, "GET", &format!("/api/hosts/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(host["name"], "node-1");
+    assert_eq!(host["status"], "disconnected");
+
+    let uri = format!("/api/hosts/{id}/events");
+    let (status, events) = json_call(&app, ADMIN, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let kinds: Vec<&str> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["host.enrolled", "host.created"]);
+    assert_eq!(
+        events[1]["data"],
+        json!({ "name": "node-1", "os": "linux" })
+    );
+    assert!(events[1]["at"].is_string());
+
+    let (status, _) = json_call(&app, OTHER_USER, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    for uri in [
+        format!("/api/hosts/{}", Uuid::new_v4()),
+        format!("/api/hosts/{}/events", Uuid::new_v4()),
+        "/api/hosts/not-an-id".to_owned(),
+        "/api/unknown".to_owned(),
+    ] {
+        let (status, body) = json_call(&app, ADMIN, "GET", &uri, None).await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::NOT_FOUND, json!({ "error": "not_found" })),
+            "{uri}"
+        );
+    }
+}

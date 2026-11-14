@@ -1,10 +1,11 @@
-//! The JSON API for people, under `/api`: create a host and list the hosts.
+//! The JSON API for people, under `/api`: create a host, list the hosts,
+//! and read one host and its events.
 //! Only the Tailscale users in the admin list may call it (`require_admin`).
 
 use std::net::SocketAddr;
 
 use axum::Json;
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{ConnectInfo, Path, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -188,51 +189,114 @@ type Row = (
     Option<String>,
 );
 
+/// A query of [`Row`]s: `SELECT <its columns> FROM hosts` and the rest.
+macro_rules! select_hosts {
+    ($rest:literal) => {
+        concat!(
+            "SELECT id, name, os, created_at, enrolled_at, last_seen_at, agent_instance_uid,
+                    agent_version, agent_hostname, agent_os, agent_arch, agent_user
+             FROM hosts ",
+            $rest
+        )
+    };
+}
+
+fn host(row: Row, now: DateTime<Utc>) -> Host {
+    let (
+        id,
+        name,
+        os,
+        created_at,
+        enrolled_at,
+        last_seen_at,
+        instance,
+        version,
+        hostname,
+        agent_os,
+        arch,
+        user,
+    ) = row;
+    Host {
+        id,
+        name,
+        os,
+        status: status(enrolled_at, last_seen_at, now),
+        created_at,
+        enrolled_at,
+        last_seen_at,
+        agent: instance.map(|_| Agent {
+            version,
+            hostname,
+            os: agent_os,
+            arch,
+            user,
+        }),
+    }
+}
+
 /// `GET /api/hosts`: every host by name, with its status.
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Host>>> {
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, name, os, created_at, enrolled_at, last_seen_at, agent_instance_uid,
-                agent_version, agent_hostname, agent_os, agent_arch, agent_user
-         FROM hosts ORDER BY name",
+    let rows: Vec<Row> = sqlx::query_as(select_hosts!("ORDER BY name"))
+        .fetch_all(&state.pool)
+        .await?;
+    let now = Utc::now();
+    Ok(Json(rows.into_iter().map(|row| host(row, now)).collect()))
+}
+
+/// The host id of a path. One that is not a UUID names no host.
+fn host_id(id: &str) -> ApiResult<Uuid> {
+    id.parse()
+        .map_err(|_| Failure::new(StatusCode::NOT_FOUND, "not_found"))
+}
+
+/// `GET /api/hosts/{id}`: one host, or 404 `not_found`.
+pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Host>> {
+    let id = host_id(&id)?;
+    let row: Option<Row> = sqlx::query_as(select_hosts!("WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let row = row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
+    Ok(Json(host(row, Utc::now())))
+}
+
+#[derive(Debug, Serialize)]
+pub struct Event {
+    pub id: i64,
+    pub kind: String,
+    pub at: DateTime<Utc>,
+    pub data: serde_json::Value,
+}
+
+/// How many events `GET /api/hosts/{id}/events` returns.
+const EVENT_LIMIT: i64 = 100;
+
+/// `GET /api/hosts/{id}/events`: the host's latest events, newest first,
+/// or 404 `not_found`.
+pub async fn events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<Event>>> {
+    let id = host_id(&id)?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM hosts WHERE id = $1)")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await?;
+    if !exists {
+        return Err(Failure::new(StatusCode::NOT_FOUND, "not_found"));
+    }
+    let rows: Vec<(i64, String, DateTime<Utc>, serde_json::Value)> = sqlx::query_as(
+        "SELECT id, kind, at, data FROM events WHERE host_id = $1 ORDER BY id DESC LIMIT $2",
     )
+    .bind(id)
+    .bind(EVENT_LIMIT)
     .fetch_all(&state.pool)
     .await?;
-    let now = Utc::now();
-    let hosts = rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                name,
-                os,
-                created_at,
-                enrolled_at,
-                last_seen_at,
-                instance,
-                version,
-                hostname,
-                agent_os,
-                arch,
-                user,
-            )| Host {
-                id,
-                name,
-                os,
-                status: status(enrolled_at, last_seen_at, now),
-                created_at,
-                enrolled_at,
-                last_seen_at,
-                agent: instance.map(|_| Agent {
-                    version,
-                    hostname,
-                    os: agent_os,
-                    arch,
-                    user,
-                }),
-            },
-        )
-        .collect();
-    Ok(Json(hosts))
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, kind, at, data)| Event { id, kind, at, data })
+            .collect(),
+    ))
 }
 
 #[cfg(test)]

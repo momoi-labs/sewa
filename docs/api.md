@@ -27,6 +27,7 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 401 | `token_invalid` | The install token is unknown, used, or expired. |
 | 403 | `not_tailnet` | WhoIs does not know the caller as a tailnet node. |
 | 403 | `not_admin` | The caller's login is not in `SEWA_ADMINS`. |
+| 404 | `not_found` | The host does not exist, or the path under `/api` is unknown. |
 | 409 | `name_taken` | A host with this name exists. |
 | 503 | `whois_unavailable` | tailscaled did not answer. |
 | 500 | `internal` | Anything else. Details go to the controller log. |
@@ -68,6 +69,35 @@ Lists hosts by name. `status` is:
 ```json
 { "version": "0.1.0", "hostname": "build-1", "os": "linux", "arch": "amd64", "user": "root" }
 ```
+
+### `GET /api/hosts/{id}`
+
+Returns one host, in the same shape as an item of `GET /api/hosts`.
+
+### `GET /api/hosts/{id}/events`
+
+Returns the host's events, newest first, at most 100:
+
+```json
+[{ "id": 3, "kind": "host.connected", "at": "…", "data": {} }]
+```
+
+## Web app
+
+The controller serves the web app at `/`. The app files hold no data, so
+they are served like `/install`. The app reads everything from `/api`, which
+checks WhoIs and `SEWA_ADMINS`. Paths that are not files return the app, so
+its routes work on reload. Build the
+app before you build the controller, because the controller embeds
+`web/dist`:
+
+```sh
+cd web && npm ci && npm run build
+```
+
+Without a build, `/` says that the app is not built. To work on the app,
+run `npm run dev` in `web/`. It proxies `/api` to `SEWA_CONTROLLER_URL`,
+default `http://127.0.0.1:8080`.
 
 ## Install
 

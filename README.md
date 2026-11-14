@@ -5,8 +5,8 @@ machines over time and keeps each one as it was declared.
 
 ## Status
 
-sewa is early. Hosts can enroll and report their status. See
-[docs/api.md](docs/api.md).
+sewa is early. Hosts can enroll and report their status, and a web app
+lists them. See [docs/api.md](docs/api.md).
 
 ## What sewa will do
 
