@@ -3,6 +3,7 @@ import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-route
 import { GitPullRequestDraft, KeyRound, Layers, Server } from 'lucide-react';
 import { useState } from 'react';
 
+import { SewaMark } from './SewaMark';
 import { applyTheme, savedTheme, type Theme } from './theme';
 
 /** The frame of every page: the brand, the theme, and the destinations
@@ -51,6 +52,7 @@ export function Shell() {
     <ApplicationShell
       brand={
         <Link to="/" className="brand">
+          <SewaMark />
           <span className="t-label">sewa</span>
         </Link>
       }
