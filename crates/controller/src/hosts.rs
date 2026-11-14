@@ -1,5 +1,5 @@
 //! The JSON API for people, under `/api`: create a host, list the hosts,
-//! and read one host and its events.
+//! and read one host, its desired state, and its events.
 //! Only the Tailscale users in the admin list may call it (`require_admin`).
 
 use std::net::SocketAddr;
@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::error::{ApiResult, Failure};
 use crate::status::{Status, status};
-use crate::{AppState, events, install, secret};
+use crate::{AppState, changes, desired, events, install, roles, secret};
 
 /// How long an install token stays valid.
 pub const TOKEN_LIFETIME: Duration = Duration::hours(1);
@@ -59,11 +59,14 @@ async fn identify_peer(
 /// list. Others get 403 `not_admin`.
 pub async fn require_admin(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     match identify(&state, &request).await {
-        Ok(identity) if state.admins.contains(&identity.login) => next.run(request).await,
+        Ok(identity) if state.admins.contains(&identity.login) => {
+            request.extensions_mut().insert(identity);
+            next.run(request).await
+        }
         Ok(_) => Failure::new(StatusCode::FORBIDDEN, "not_admin").into_response(),
         Err(failure) => failure.into_response(),
     }
@@ -107,7 +110,7 @@ pub struct Created {
 }
 
 /// A name of 1 to 63 letters, digits, `-`, `_`, or `.`.
-fn valid_name(name: &str) -> bool {
+pub fn valid_name(name: &str) -> bool {
     (1..=63).contains(&name.len())
         && name
             .bytes()
@@ -297,6 +300,149 @@ pub async fn events(
             .map(|(id, kind, at, data)| Event { id, kind, at, data })
             .collect(),
     ))
+}
+
+#[derive(Debug, Serialize)]
+pub struct Adjustment {
+    pub kind: desired::Kind,
+    pub name: String,
+    #[serde(flatten)]
+    pub adjustment: desired::Adjustment,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Drift {
+    /// `in_sync` (exit code 0), `drift` (2), or `error` (1 or another).
+    pub status: &'static str,
+    #[serde(flatten)]
+    pub plan: changes::Plan,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Undeclared {
+    pub manager: String,
+    /// The explicitly installed packages that the host's approved items do
+    /// not declare, by name.
+    pub packages: Vec<String>,
+    pub explicit_count: usize,
+    pub reported_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HostState {
+    pub roles: Vec<roles::Named>,
+    /// With the draft applied, or null without a draft.
+    pub proposed_roles: Option<Vec<roles::Named>>,
+    pub adjustments: Vec<Adjustment>,
+    pub proposed_adjustments: Option<Vec<Adjustment>>,
+    /// The host's approved items: its roles' items with its adjustments.
+    pub items: Vec<desired::Item>,
+    /// The config the host gets for them.
+    pub config: String,
+    /// The health status the agent last reported.
+    pub health: Option<String>,
+    /// The last plan of the approved state, or null before the first.
+    pub drift: Option<Drift>,
+    pub undeclared: Option<Undeclared>,
+}
+
+fn named_roles(state: &desired::State, host: Uuid) -> Vec<roles::Named> {
+    state
+        .roles_of(host)
+        .into_iter()
+        .map(|(id, name)| roles::Named { id, name })
+        .collect()
+}
+
+fn adjustments(state: &desired::State, host: Uuid) -> Vec<Adjustment> {
+    state
+        .adjustments
+        .get(&host)
+        .into_iter()
+        .flatten()
+        .map(|((kind, name), adjustment)| Adjustment {
+            kind: *kind,
+            name: name.clone(),
+            adjustment: adjustment.clone(),
+        })
+        .collect()
+}
+
+/// `GET /api/hosts/{id}/state`: the host's roles, adjustments, items,
+/// drift, and undeclared packages, or 404 `not_found`.
+pub async fn state(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<HostState>> {
+    let id = host_id(&id)?;
+    let mut connection = state.pool.acquire().await?;
+    type Explicit = (
+        Option<String>,
+        Option<String>,
+        Option<Vec<String>>,
+        Option<DateTime<Utc>>,
+    );
+    let row: Option<Explicit> = sqlx::query_as(
+        "SELECT health, explicit_manager, explicit_packages, explicit_reported_at
+         FROM hosts WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (health, manager, explicit, reported_at) =
+        row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
+    let (approved, proposed) = desired::states(&mut connection).await?;
+    let items = approved.host_items(id);
+    let config = desired::render(&items);
+    let plan: Option<_> = sqlx::query_as(changes::SELECT_PLAN)
+        .bind(id)
+        .bind(desired::CURRENT)
+        .fetch_optional(&mut *connection)
+        .await?;
+    let drift = plan.map(|row| {
+        let plan = changes::plan(row, Some(&desired::hash(&config)));
+        Drift {
+            status: match plan.exit_code {
+                0 => "in_sync",
+                2 => "drift",
+                _ => "error",
+            },
+            plan,
+        }
+    });
+    let undeclared = match (manager, explicit, reported_at) {
+        (Some(manager), Some(explicit), Some(reported_at)) => {
+            let declared = desired::declared_packages(&items, &manager);
+            let mut packages: Vec<String> = explicit
+                .iter()
+                .filter(|package| !declared.contains(*package))
+                .cloned()
+                .collect();
+            packages.sort();
+            Some(Undeclared {
+                manager,
+                packages,
+                explicit_count: explicit.len(),
+                reported_at,
+            })
+        }
+        _ => None,
+    };
+    Ok(Json(HostState {
+        roles: named_roles(&approved, id),
+        proposed_roles: proposed
+            .as_ref()
+            .map(|(_, proposed)| named_roles(proposed, id)),
+        adjustments: adjustments(&approved, id),
+        proposed_adjustments: proposed
+            .as_ref()
+            .map(|(_, proposed)| adjustments(proposed, id)),
+        items: roles::items(&items),
+        config,
+        health,
+        drift,
+        undeclared,
+    }))
 }
 
 #[cfg(test)]

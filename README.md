@@ -6,7 +6,9 @@ machines over time and keeps each one as it was declared.
 ## Status
 
 sewa is early. Hosts can enroll and report their status, and a web app
-lists them. See [docs/api.md](docs/api.md).
+lists them. Roles and host adjustments are edited in a draft change, and
+each agent plans the change and its current desired state with mise
+without applying anything. See [docs/api.md](docs/api.md).
 
 ## What sewa will do
 

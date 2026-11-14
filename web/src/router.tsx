@@ -10,6 +10,10 @@ import { NotFound } from './components/NotFound';
 import { Shell } from './components/Shell';
 import { HostPage } from './hosts/HostPage';
 import { HostsPage } from './hosts/HostsPage';
+import { ChangePage } from './desired/ChangePage';
+import { ChangesPage } from './desired/ChangesPage';
+import { RolePage } from './desired/RolePage';
+import { RolesPage } from './desired/RolesPage';
 
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
@@ -24,7 +28,19 @@ const hostRoute = createRoute({
   component: HostPage,
 });
 
-const routeTree = rootRoute.addChildren([hostsRoute, hostRoute]);
+const rolesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles', component: RolesPage });
+
+const roleRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles/$roleId', component: RolePage });
+
+const changesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/changes', component: ChangesPage });
+
+const changeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/changes/$changeId',
+  component: ChangePage,
+});
+
+const routeTree = rootRoute.addChildren([hostsRoute, hostRoute, rolesRoute, roleRoute, changesRoute, changeRoute]);
 
 export function createAppRouter(queryClient: QueryClient, history?: RouterHistory) {
   return createRouter({ routeTree, context: { queryClient }, history });

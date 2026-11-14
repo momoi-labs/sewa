@@ -1,5 +1,5 @@
-//! The sewa controller: hosts, their enrollment, and what their agents
-//! report over OpAMP.
+//! The sewa controller: hosts, their enrollment, their desired state, and
+//! what their agents report over OpAMP.
 
 use std::sync::Arc;
 
@@ -14,12 +14,15 @@ use sqlx::migrate::Migrator;
 use crate::install::AgentFiles;
 use crate::whois::WhoIs;
 
+pub mod changes;
+pub mod desired;
 pub mod enroll;
 pub mod error;
 pub mod events;
 pub mod hosts;
 pub mod install;
 pub mod opamp;
+pub mod roles;
 pub mod secret;
 pub mod status;
 pub mod web;
@@ -59,6 +62,13 @@ pub fn router(state: AppState) -> Router {
         .route("/hosts", get(hosts::list).post(hosts::create))
         .route("/hosts/{id}", get(hosts::get))
         .route("/hosts/{id}/events", get(hosts::events))
+        .route("/hosts/{id}/state", get(hosts::state))
+        .route("/roles", get(roles::list).post(roles::create))
+        .route("/roles/{id}", get(roles::get))
+        .route("/changes", get(changes::list))
+        .route("/changes/draft/edits", post(changes::add_edit))
+        .route("/changes/{id}", get(changes::get))
+        .route("/changes/{id}/discard", post(changes::discard))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             hosts::require_admin,

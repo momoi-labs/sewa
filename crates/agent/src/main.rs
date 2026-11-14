@@ -4,10 +4,14 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 
 mod opamp;
+mod plan;
 mod state;
+mod worker;
 
 use opamp::{AGENT_VERSION, Host, POLL_INTERVAL};
+use plan::Planner;
 use state::State;
+use worker::Worker;
 
 /// The node side of sewa: reports this machine to the controller.
 #[derive(Debug, Parser)]
@@ -21,7 +25,8 @@ struct Cli {
 enum Command {
     /// Trade an install token for a credential and store it.
     Enroll(EnrollArgs),
-    /// Report this machine to the controller over OpAMP every 30 seconds.
+    /// Report this machine to the controller over OpAMP every 30 seconds,
+    /// and plan the configs it sends. The agent never applies a plan.
     Run(RunArgs),
 }
 
@@ -49,6 +54,9 @@ struct EnrollArgs {
 struct RunArgs {
     #[command(flatten)]
     state: StateArgs,
+    /// The mise binary that plans the configs.
+    #[arg(long, env = "SEWA_MISE", default_value = "mise")]
+    mise: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -145,24 +153,36 @@ fn run(args: RunArgs) -> Result<(), String> {
         "sewa-agent {AGENT_VERSION}: reporting to {server} as {}",
         host.user
     );
+    let mut worker = Worker::new(Planner::new(&state.dir, args.mise));
     let mut sequence_num: u64 = 0;
     let mut failing = false;
     loop {
-        let message = opamp::message(uid, sequence_num, &host);
+        let mut message = opamp::message(uid, sequence_num, &host);
+        let report = worker.fill(&mut message);
         match opamp::exchange(&agent, &url, &credential, &message) {
-            Ok(_) => {
+            Ok(answer) => {
                 if failing {
                     eprintln!("sewa-agent: the controller answers again");
                 }
                 failing = false;
+                if let Some(remote) = answer.remote_config {
+                    worker.receive(remote);
+                }
             }
             Err(error) => {
                 eprintln!("sewa-agent: cannot report: {error}");
                 failing = true;
+                if let Some(report) = report {
+                    worker.queue.push_front(report);
+                }
             }
         }
         sequence_num = sequence_num.wrapping_add(1);
-        std::thread::sleep(POLL_INTERVAL);
+        worker.tick(std::time::Instant::now());
+        // Queued plans go out one per message, without waiting.
+        if failing || worker.queue.is_empty() {
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 }
 

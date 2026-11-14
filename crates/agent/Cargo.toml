@@ -14,6 +14,8 @@ path = "src/main.rs"
 clap.workspace = true
 nix.workspace = true
 prost.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 ureq.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 

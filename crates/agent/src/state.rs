@@ -86,7 +86,7 @@ impl State {
 
 /// Writes a file, mode 0600, through a temporary file, so a crash never
 /// leaves half of one. From pg-yard's `crates/agent/src/opamp.rs`.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
