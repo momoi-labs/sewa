@@ -83,7 +83,7 @@ function ApproveForm({ change, onClose }: { change: ChangeDetail; onClose: () =>
           <Skeleton />
         ) : (
           options.data && (
-            <TableFrame frame="none">
+            <TableFrame frame="none" data-shadow-style="none">
               <Table aria-label="Plans to sign">
                 <TableHeader>
                   <TableRow>

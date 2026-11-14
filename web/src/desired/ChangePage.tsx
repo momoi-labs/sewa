@@ -132,7 +132,7 @@ export function ChangePage() {
           )}
           {summary && <p className="t-label">{summary}.</p>}
           <Card className="detail-tabs" data-fill="false">
-            <Tabs defaultValue="plans">
+            <Tabs defaultValue="plans" data-shadow-style="none">
               <TabsList aria-label="Change details">
                 <TabsTrigger value="plans">Plans</TabsTrigger>
                 <TabsTrigger value="edits">Edits</TabsTrigger>

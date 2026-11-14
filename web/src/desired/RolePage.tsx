@@ -75,7 +75,7 @@ export function RolePage() {
           <DraftNotice />
           {role.isError && <ErrorAlert error={role.error} thing="role" onRetry={() => void role.refetch()} />}
           <Card className="detail-tabs" data-fill="false">
-            <Tabs defaultValue="items">
+            <Tabs defaultValue="items" data-shadow-style="none">
               <TabsList aria-label="Role details">
                 <TabsTrigger value="items">Items</TabsTrigger>
                 <TabsTrigger value="hosts">Hosts</TabsTrigger>
