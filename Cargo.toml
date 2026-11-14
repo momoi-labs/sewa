@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[workspace.dependencies]
+prost = "0.14"
+prost-build = { version = "0.14", default-features = false }
+protox = "0.10"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Full debug info makes each test binary large to link, and links run in
+# parallel. Line tables are enough for backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
