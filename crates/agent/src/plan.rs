@@ -13,7 +13,10 @@
 //! - trusts `<state>/configs` with `MISE_TRUSTED_CONFIG_PATHS`, so mise does
 //!   not ask.
 //!
-//! The agent never applies a plan.
+//! The agent applies only `current`, and only after it checked a signed
+//! approval of its plan (see `worker`). Applying runs `mise bootstrap` with
+//! the same isolation, limited to the parts the controller renders:
+//! packages and tools.
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
@@ -30,6 +33,9 @@ pub const CURRENT: &str = "current";
 
 /// The longest error text sent to the controller.
 const ERROR_LIMIT: usize = 4000;
+
+/// The longest apply log sent to the controller. The end is kept.
+const LOG_LIMIT: usize = 32 * 1024;
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -149,6 +155,32 @@ impl Planner {
             plan,
             error,
         }
+    }
+
+    /// Applies the config as last written with `mise bootstrap`. Returns
+    /// mise's exit code and its output.
+    pub fn apply(&self, config: &str) -> (i32, String) {
+        let Some(dir) = self.dir(config) else {
+            return (1, format!("unknown config name {config}"));
+        };
+        let output = match self
+            .command(&dir, std::env::vars_os())
+            .args(["bootstrap", "--yes", "--only", "packages,tools"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => return (1, format!("cannot run {}: {error}", self.mise.display())),
+        };
+        let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
+        log.push_str(&String::from_utf8_lossy(&output.stderr));
+        if log.len() > LOG_LIMIT {
+            let mut start = log.len() - LOG_LIMIT;
+            while !log.is_char_boundary(start) {
+                start += 1;
+            }
+            log = format!("…{}", &log[start..]);
+        }
+        (output.status.code().unwrap_or(1), log)
     }
 
     fn write(&self, dir: &Path, body: &[u8]) -> io::Result<()> {

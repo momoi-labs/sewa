@@ -1,0 +1,6 @@
+/* Product CSS for sewa. Kiso classes come first; this file only sizes what
+   Kiso leaves to the product. */
+
+/* A host's apply log on the change page. LogView takes its height from the
+   product; this shows about a dozen lines and scrolls the rest. */
+.apply-log { block-size: calc(var(--spacing-4xl) * 5); }

@@ -7,7 +7,9 @@
 //!
 //! The controller sends each host its mise bootstrap configs as
 //! `remote_config`, and the agent sends each plan back as a custom message
-//! of the `io.sewa.plan` capability. See docs/api.md.
+//! of the `io.sewa.plan` capability. Approvals go to the agent, and what
+//! it did with them comes back, as custom messages of the
+//! `io.sewa.approval` capability. See docs/api.md.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -18,11 +20,11 @@ use uuid::Uuid;
 
 use crate::enroll::{authenticate, bearer};
 use crate::error::ApiResult;
-use crate::{AppState, desired, events};
+use crate::{AppState, approvals, desired, events};
 use proto::any_value::Value;
 use proto::{
     AgentConfigMap, AgentConfigObject, AgentDescription, AgentRemoteConfig, AgentToServer,
-    CustomCapabilities, ServerCapabilities, ServerToAgent, ServerToAgentFlags,
+    CustomCapabilities, CustomMessage, ServerCapabilities, ServerToAgent, ServerToAgentFlags,
 };
 
 /// The custom capability that carries plans from the agent.
@@ -134,6 +136,18 @@ pub async fn exchange(
             Err(error) => tracing::warn!(host = %host, %error, "cannot read a plan"),
         }
     }
+    if let Some(custom) = &message.custom_message
+        && custom.capability == sewa_approval::CAPABILITY
+        && custom.r#type == sewa_approval::RESULT_TYPE
+    {
+        match serde_json::from_slice::<sewa_approval::Outcome>(&custom.data) {
+            Ok(outcome) => approvals::save_outcome(&state.pool, host, &outcome).await?,
+            Err(error) => tracing::warn!(host = %host, %error, "cannot read an apply result"),
+        }
+    }
+    // The oldest approval the host has not reported on, on every answer
+    // until it does.
+    let approval = approvals::pending(&state.pool, host).await?;
     let remote_config = remote_config(&state.pool, host).await?;
     let known_hash = message
         .remote_config_status
@@ -152,7 +166,15 @@ pub async fn exchange(
         remote_config: (known_hash != Some(remote_config.config_hash.as_slice()))
             .then_some(remote_config),
         custom_capabilities: Some(CustomCapabilities {
-            capabilities: vec![PLAN_CAPABILITY.to_owned()],
+            capabilities: vec![
+                PLAN_CAPABILITY.to_owned(),
+                sewa_approval::CAPABILITY.to_owned(),
+            ],
+        }),
+        custom_message: approval.map(|approval| CustomMessage {
+            capability: sewa_approval::CAPABILITY.to_owned(),
+            r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
+            data: serde_json::to_vec(&approval).unwrap_or_default(),
         }),
         ..Default::default()
     };

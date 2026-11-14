@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -26,8 +27,13 @@ enum Command {
     /// Trade an install token for a credential and store it.
     Enroll(EnrollArgs),
     /// Report this machine to the controller over OpAMP every 30 seconds,
-    /// and plan the configs it sends. The agent never applies a plan.
+    /// plan the configs it sends, and apply the current one when a pinned
+    /// approver key signed its plan.
     Run(RunArgs),
+    /// Pin the approver keys, read as JSON from stdin, replacing the keys
+    /// pinned before. The install script runs this; with no key pinned the
+    /// agent applies nothing.
+    Pin(StateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -64,6 +70,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Enroll(args) => enroll(args),
         Command::Run(args) => run(args),
+        Command::Pin(args) => pin(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -138,6 +145,37 @@ fn enroll(args: EnrollArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn pin(args: StateArgs) -> Result<(), String> {
+    let state = state(args)?;
+    let mut input = String::new();
+    std::io::stdin()
+        .take(1024 * 1024)
+        .read_to_string(&mut input)
+        .map_err(|error| format!("cannot read the keys: {error}"))?;
+    let pinned: sewa_approval::Pinned =
+        serde_json::from_str(&input).map_err(|error| format!("cannot read the keys: {error}"))?;
+    for key in &pinned.keys {
+        sewa_approval::public_key(&key.public_key)
+            .map_err(|_| format!("the key of {} does not decode", key.login))?;
+    }
+    state
+        .store_approvers(&pinned)
+        .map_err(|error| format!("cannot store the keys in {}: {error}", state.dir.display()))?;
+    if pinned.keys.is_empty() {
+        eprintln!(
+            "sewa-agent: no approver key is pinned; this machine applies nothing until \
+             a passkey is registered and the install runs again"
+        );
+    } else {
+        eprintln!(
+            "sewa-agent: pinned {} approver key(s) for {}",
+            pinned.keys.len(),
+            pinned.rp_id
+        );
+    }
+    Ok(())
+}
+
 fn run(args: RunArgs) -> Result<(), String> {
     let state = state(args.state)?;
     let (server, credential) = state
@@ -153,7 +191,11 @@ fn run(args: RunArgs) -> Result<(), String> {
         "sewa-agent {AGENT_VERSION}: reporting to {server} as {}",
         host.user
     );
-    let mut worker = Worker::new(Planner::new(&state.dir, args.mise));
+    if state.approvers().keys.is_empty() {
+        eprintln!("sewa-agent: no approver key is pinned; this machine applies nothing");
+    }
+    let planner = Planner::new(&state.dir, args.mise);
+    let mut worker = Worker::new(planner, state, uid);
     let mut sequence_num: u64 = 0;
     let mut failing = false;
     loop {
@@ -168,18 +210,23 @@ fn run(args: RunArgs) -> Result<(), String> {
                 if let Some(remote) = answer.remote_config {
                     worker.receive(remote);
                 }
+                // After the config of the same answer, which the approval
+                // may be about.
+                if let Some(custom) = &answer.custom_message {
+                    worker.approval(custom);
+                }
             }
             Err(error) => {
                 eprintln!("sewa-agent: cannot report: {error}");
                 failing = true;
-                if let Some(report) = report {
-                    worker.queue.push_front(report);
+                if let Some(queued) = report {
+                    worker.queue.push_front(queued);
                 }
             }
         }
         sequence_num = sequence_num.wrapping_add(1);
         worker.tick(std::time::Instant::now());
-        // Queued plans go out one per message, without waiting.
+        // Queued messages go out one per message, without waiting.
         if failing || worker.queue.is_empty() {
             std::thread::sleep(POLL_INTERVAL);
         }

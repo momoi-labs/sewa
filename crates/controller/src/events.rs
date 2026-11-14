@@ -13,6 +13,14 @@ pub const CHANGE_CREATED: &str = "change.created";
 pub const CHANGE_EDITED: &str = "change.edited";
 pub const CHANGE_DISCARDED: &str = "change.discarded";
 pub const DRIFT_DETECTED: &str = "drift.detected";
+pub const PASSKEY_REGISTERED: &str = "passkey.registered";
+pub const CHANGE_APPROVED: &str = "change.approved";
+pub const PLAN_APPLIED: &str = "plan.applied";
+pub const APPLY_FAILED: &str = "apply.failed";
+pub const APPLY_REPLAN: &str = "apply.replan";
+pub const DRIFT_REVERTED: &str = "drift.reverted";
+pub const DRIFT_ADOPTED: &str = "drift.adopted";
+pub const DRIFT_IGNORED: &str = "drift.ignored";
 
 /// Appends one event, in the caller's transaction.
 pub async fn record(

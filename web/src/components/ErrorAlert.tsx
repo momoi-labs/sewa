@@ -36,6 +36,54 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'The change is closed',
     body: 'Someone discarded this change already. Reload the page to see it.',
   },
+  invalid_name: {
+    title: 'The name was not saved',
+    body: 'Give the passkey a name of 1 to 64 characters, then try again.',
+  },
+  unsupported_algorithm: {
+    title: 'This passkey type is not supported',
+    body: 'Agents check ES256 passkeys only. Use another authenticator, such as a phone or a security key.',
+  },
+  invalid_passkey: {
+    title: 'The passkey was not saved',
+    body: 'The controller could not read what the browser sent. Try again, or use another authenticator.',
+  },
+  unknown_challenge: {
+    title: 'The passkey request expired',
+    body: 'A passkey must be created within five minutes. Try again.',
+  },
+  wrong_origin: {
+    title: 'The address does not match the controller',
+    body: 'Open the web app at the address in SEWA_PUBLIC_URL, then try again.',
+  },
+  passkey_exists: {
+    title: 'This passkey is saved already',
+    body: 'Use another authenticator to add a second passkey.',
+  },
+  no_passkey: {
+    title: 'You have no passkey',
+    body: 'Add a passkey on the Passkeys page, then run the install script on each host again so its agent trusts it.',
+  },
+  not_approvable: {
+    title: 'This change cannot be approved',
+    body: 'It was discarded, or every host has its approval already. Reload the page to see it.',
+  },
+  nothing_to_approve: {
+    title: 'No host needs this change',
+    body: 'The change does not alter the config of any host. Edit a role or a host first.',
+  },
+  plans_not_ready: {
+    title: 'Some hosts have not planned the change',
+    body: 'Wait until each affected host shows its plan, then approve.',
+  },
+  plans_changed: {
+    title: 'A plan changed while you approved',
+    body: 'Check the new plans, then approve again.',
+  },
+  invalid_assertion: {
+    title: 'The controller refused the signature',
+    body: 'Use one of your own passkeys, then try again.',
+  },
   internal: {
     title: 'Something went wrong on the controller',
     body: 'The controller log has the details. Try again in a moment.',

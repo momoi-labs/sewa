@@ -37,6 +37,7 @@ const draft: Change = {
   created_by: 'admin',
   closed_at: null,
   edit_count: 1,
+  revert_host: null,
 };
 
 const detail: ChangeDetail = {
@@ -86,8 +87,10 @@ const detail: ChangeDetail = {
         reported_at: '2026-01-02T10:01:00Z',
         stale: false,
       },
+      result: null,
     },
   ],
+  approvals: [],
 };
 
 describe('roles', () => {
@@ -164,10 +167,11 @@ describe('host drift', () => {
       items: role.items,
       config: '',
       health: 'drift',
-      drift: { ...detail.hosts[0]!.plan!, status: 'drift' },
+      drift: { ...detail.hosts[0]!.plan!, status: 'drift', ignored: false, revert_change: null },
       undeclared: {
         manager: 'pacman',
         packages: ['sl'],
+        ignored_count: 0,
         explicit_count: 3,
         reported_at: '2026-01-02T10:01:00Z',
       },

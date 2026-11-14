@@ -11,6 +11,8 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use prost::Message;
 use serde_json::{Value, json};
+use sewa_approval::testing::Authenticator;
+use sewa_approval::{Outcome, Pinned, Signed};
 use sewa_controller::install::AgentFiles;
 use sewa_controller::opamp::proto::{
     AgentDescription, AgentToServer, AnyValue, CustomMessage, KeyValue, RemoteConfigStatus,
@@ -18,6 +20,7 @@ use sewa_controller::opamp::proto::{
 };
 use sewa_controller::whois::{Identity, WhoIs, WhoIsFuture};
 use sewa_controller::{AppState, router, status};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -668,7 +671,7 @@ async fn drift_is_recorded_once_and_undeclared_packages_show(pool: PgPool) {
     let (_, credential) = enroll(&app, NODE, &token).await;
     let instance = Uuid::new_v4();
     opamp(&app, &credential, &report(instance, true)).await;
-    // Approval is not built yet, so the approved state is written here.
+    // The approved state is written here directly.
     let role = create_role(&app, "base").await;
     sqlx::query("INSERT INTO role_items VALUES ($1::uuid, 'package', 'jq', 'latest')")
         .bind(&role)
@@ -722,4 +725,426 @@ async fn drift_is_recorded_once_and_undeclared_packages_show(pool: PgPool) {
     assert_eq!(state["undeclared"]["manager"], "pacman");
     assert_eq!(state["undeclared"]["packages"], json!(["git", "sl"]));
     assert_eq!(state["undeclared"]["explicit_count"], 3);
+}
+
+/// The relying party of the test controller's public URL.
+const RP_ID: &str = "controller.example";
+const ORIGIN: &str = "http://controller.example:8080";
+
+/// Registers a passkey of the admin, as the browser does with
+/// `navigator.credentials.create`.
+async fn register_passkey(app: &Router, key: &Authenticator, origin: &str) -> (StatusCode, Value) {
+    let (status, options) = json_call(app, ADMIN, "POST", "/api/passkeys/options", None).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["rp"]["id"], RP_ID);
+    assert_eq!(options["algorithm"], -7);
+    let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
+    let client_data = Authenticator::client_data("webauthn.create", &challenge, origin);
+    let mut authenticator_data = Sha256::digest(RP_ID.as_bytes()).to_vec();
+    authenticator_data.extend_from_slice(&[0x45, 0, 0, 0, 0]);
+    json_call(
+        app,
+        ADMIN,
+        "POST",
+        "/api/passkeys",
+        Some(json!({
+            "name": "laptop",
+            "credential_id": sewa_approval::encode(&key.id),
+            "public_key": key.public_key(),
+            "algorithm": -7,
+            "authenticator_data": sewa_approval::encode(&authenticator_data),
+            "client_data_json": sewa_approval::encode(&client_data),
+        })),
+    )
+    .await
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn passkeys_register_and_get_pinned_at_install(pool: PgPool) {
+    let app = app(pool.clone());
+    let key = Authenticator::new(1);
+    // The install script of a controller without passkeys pins none.
+    let (_, script) = call(
+        &app,
+        NODE,
+        Request::get("/install").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert!(String::from_utf8(script).unwrap().contains(r#""keys":[]"#));
+
+    let (status, body) = register_passkey(&app, &key, "https://evil.example.com").await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::BAD_REQUEST, json!({ "error": "wrong_origin" }))
+    );
+    let (status, created) = register_passkey(&app, &key, ORIGIN).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["login"], "admin@example.com");
+    let (status, body) = register_passkey(&app, &key, ORIGIN).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "passkey_exists" }))
+    );
+    let (_, list) = json_call(&app, ADMIN, "GET", "/api/passkeys", None).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["credential_id"], sewa_approval::encode(&key.id));
+
+    let (_, script) = call(
+        &app,
+        NODE,
+        Request::get("/install").body(Body::empty()).unwrap(),
+    )
+    .await;
+    let script = String::from_utf8(script).unwrap();
+    assert!(script.contains(&key.public_key()), "{script}");
+    assert!(script.contains(r#""rp_id":"controller.example""#));
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM events ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(kinds.contains(&"passkey.registered".to_owned()));
+}
+
+/// A connected host in a role, with a draft that adds `jq` to the role,
+/// and the agent's plan of it. Returns the host, the credential, the
+/// instance, and the change id.
+async fn planned_draft(app: &Router) -> (String, String, Uuid, String) {
+    let (host, token) = create_host(app, "node-1").await;
+    let (_, credential) = enroll(app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    opamp(app, &credential, &report(instance, true)).await;
+    let role = create_role(app, "base").await;
+    edit(
+        app,
+        json!({ "op": "host_role_add", "host": host, "role": role }),
+    )
+    .await;
+    let (_, change) = edit(
+        app,
+        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
+    )
+    .await;
+    let id = change["id"].as_str().unwrap().to_owned();
+    let (_, body) = opamp(app, &credential, &report(instance, false)).await;
+    let configs = ServerToAgent::decode(&body[..])
+        .unwrap()
+        .remote_config
+        .unwrap()
+        .config
+        .unwrap()
+        .config_map;
+    let name = format!("change/{id}");
+    let config_hash =
+        sewa_controller::desired::hash(&String::from_utf8_lossy(&configs[&name].body));
+    opamp(
+        app,
+        &credential,
+        &plan_message(
+            instance,
+            json!({ "config": name, "config_hash": config_hash, "plan_hash": "p1", "exit_code": 2, "plan": {}, "error": null }),
+        ),
+    )
+    .await;
+    (host, credential, instance, id)
+}
+
+fn outcome_message(instance: Uuid, outcome: &Outcome) -> AgentToServer {
+    AgentToServer {
+        custom_message: Some(CustomMessage {
+            capability: "io.sewa.approval".to_owned(),
+            r#type: "result".to_owned(),
+            data: serde_json::to_vec(outcome).unwrap(),
+        }),
+        ..report(instance, false)
+    }
+}
+
+/// The approval the controller sends with its answer, if any.
+async fn sent_approval(app: &Router, credential: &str, instance: Uuid) -> Option<Signed> {
+    let (_, body) = opamp(app, credential, &report(instance, false)).await;
+    let custom = ServerToAgent::decode(&body[..]).unwrap().custom_message?;
+    assert_eq!(custom.capability, "io.sewa.approval");
+    assert_eq!(custom.r#type, "approval");
+    Some(serde_json::from_slice(&custom.data).unwrap())
+}
+
+async fn approve_with(app: &Router, id: &str, key: &Authenticator) -> (StatusCode, Value) {
+    let (status, options) = json_call(
+        app,
+        ADMIN,
+        "POST",
+        &format!("/api/changes/{id}/approval"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
+    let assertion = key.assert(RP_ID, ORIGIN, &challenge);
+    json_call(
+        app,
+        ADMIN,
+        "POST",
+        &format!("/api/changes/{id}/approve"),
+        Some(serde_json::to_value(&assertion).unwrap()),
+    )
+    .await
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, instance, id) = planned_draft(&app).await;
+    let approval_uri = format!("/api/changes/{id}/approval");
+    let (status, body) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "no_passkey" }))
+    );
+    let key = Authenticator::new(1);
+    register_passkey(&app, &key, ORIGIN).await;
+
+    let (status, options) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["change_id"], id);
+    assert_eq!(options["hosts"][0]["host_id"], host);
+    assert_eq!(options["hosts"][0]["instance_uid"], instance.to_string());
+    assert_eq!(options["hosts"][0]["plan_hash"], "p1");
+    assert!(
+        options["signed_text"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("sewa approval v1\nchange {id}\n"))
+    );
+    let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
+    let approve_uri = format!("/api/changes/{id}/approve");
+    // A key the admin did not register, and a signature of other plans.
+    let forged = Authenticator::new(2).assert(RP_ID, ORIGIN, &challenge);
+    let (status, body) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &approve_uri,
+        Some(serde_json::to_value(&forged).unwrap()),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "invalid_assertion" })
+        )
+    );
+    let stale = key.assert(RP_ID, ORIGIN, &[0; 32]);
+    let (status, body) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &approve_uri,
+        Some(serde_json::to_value(&stale).unwrap()),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "plans_changed" }))
+    );
+    assert!(sent_approval(&app, &credential, instance).await.is_none());
+
+    let assertion = key.assert(RP_ID, ORIGIN, &challenge);
+    let (status, change) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &approve_uri,
+        Some(serde_json::to_value(&assertion).unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{change}");
+    assert_eq!(change["status"], "approved");
+    // The edits are the approved state now.
+    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
+    assert_eq!(roles[0]["items"][0]["name"], "jq");
+    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    assert_eq!(detail["hosts"][0]["result"]["status"], "waiting");
+    assert_eq!(detail["approvals"][0]["by"], "admin@example.com");
+
+    // The agent gets the approval with the new current config, on every
+    // answer until it reports, and it verifies against the pinned keys.
+    let signed = sent_approval(&app, &credential, instance).await.unwrap();
+    assert_eq!(signed.approval.change_id.to_string(), id);
+    let pinned = Pinned {
+        rp_id: RP_ID.to_owned(),
+        origin: ORIGIN.to_owned(),
+        keys: vec![key.approver("admin@example.com")],
+    };
+    assert!(
+        sewa_approval::verify(&pinned, &signed.assertion, &signed.approval.challenge()).is_ok()
+    );
+    assert!(sent_approval(&app, &credential, instance).await.is_some());
+    let outcome = Outcome {
+        approval_id: signed.approval_id,
+        change_id: signed.approval.change_id,
+        status: "applied".to_owned(),
+        plan_hash: Some("p1".to_owned()),
+        log: "installed jq".to_owned(),
+    };
+    opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
+    assert!(sent_approval(&app, &credential, instance).await.is_none());
+    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    assert_eq!(detail["hosts"][0]["result"]["status"], "applied");
+    assert_eq!(detail["hosts"][0]["result"]["log"], "installed jq");
+    let kinds = events(&pool, &host).await;
+    assert!(kinds.ends_with(&["change.approved".to_owned(), "plan.applied".to_owned()]));
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_host_whose_plan_changed_gets_approved_again(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, instance, id) = planned_draft(&app).await;
+    let key = Authenticator::new(1);
+    register_passkey(&app, &key, ORIGIN).await;
+    let (status, _) = approve_with(&app, &id, &key).await;
+    assert_eq!(status, StatusCode::OK);
+    let signed = sent_approval(&app, &credential, instance).await.unwrap();
+    let outcome = Outcome {
+        approval_id: signed.approval_id,
+        change_id: signed.approval.change_id,
+        status: "replan".to_owned(),
+        plan_hash: Some("p2".to_owned()),
+        log: "the plan changed since the approval".to_owned(),
+    };
+    opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
+    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
+    assert_eq!(detail["hosts"][0]["result"]["status"], "replan");
+    assert!(sent_approval(&app, &credential, instance).await.is_none());
+
+    // Until the agent plans its new current config, there is nothing to
+    // approve.
+    let approval_uri = format!("/api/changes/{id}/approval");
+    let (status, body) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "plans_not_ready" }))
+    );
+    let current = signed.approval.hosts[0].config_hash.clone();
+    opamp(
+        &app,
+        &credential,
+        &plan_message(
+            instance,
+            json!({ "config": "current", "config_hash": current, "plan_hash": "p2", "exit_code": 2, "plan": {}, "error": null }),
+        ),
+    )
+    .await;
+    let (status, change) = approve_with(&app, &id, &key).await;
+    assert_eq!(status, StatusCode::OK, "{change}");
+    let again = sent_approval(&app, &credential, instance).await.unwrap();
+    assert_ne!(again.approval_id, signed.approval_id);
+    assert_eq!(again.approval.hosts[0].plan_hash, "p2");
+    let kinds = events(&pool, &host).await;
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| *kind == "change.approved")
+            .count(),
+        2
+    );
+    assert!(kinds.contains(&"apply.replan".to_owned()));
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn drift_can_be_reverted_adopted_or_ignored(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, token) = create_host(&app, "node-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    opamp(&app, &credential, &report(instance, true)).await;
+    let current =
+        sewa_controller::desired::hash(&sewa_controller::desired::render(&Default::default()));
+    opamp(
+        &app,
+        &credential,
+        &plan_message(
+            instance,
+            json!({
+                "config": "current", "config_hash": current, "plan_hash": "d1",
+                "exit_code": 2, "plan": { "resources": [] }, "error": null,
+                "explicit": { "manager": "pacman", "packages": ["git", "sl"] }
+            }),
+        ),
+    )
+    .await;
+    let drift = format!("/api/hosts/{host}/drift");
+
+    let (status, revert) = json_call(&app, ADMIN, "POST", &format!("{drift}/revert"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{revert}");
+    assert_eq!(revert["revert_host"]["id"], host);
+    let (status, again) = json_call(&app, ADMIN, "POST", &format!("{drift}/revert"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["id"], revert["id"]);
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(state["drift"]["revert_change"], revert["id"]);
+    // The revert approves the plan that fixes the drift.
+    let key = Authenticator::new(1);
+    register_passkey(&app, &key, ORIGIN).await;
+    let revert_id = revert["id"].as_str().unwrap();
+    let (status, options) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/changes/{revert_id}/approval"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["hosts"][0]["plan_hash"], "d1");
+
+    let (status, draft) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("{drift}/adopt"),
+        Some(json!({ "package": "sl", "role": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{draft}");
+    assert_eq!(draft["status"], "draft");
+    assert_ne!(draft["id"], revert["id"]);
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        state["proposed_adjustments"],
+        json!([{ "action": "set", "kind": "package", "name": "sl", "version": "latest" }]),
+        "{state}"
+    );
+
+    let (status, _) = json_call(&app, ADMIN, "POST", &format!("{drift}/ignore"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, state) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(state["drift"]["ignored"], true);
+    assert_eq!(state["undeclared"]["packages"], json!([]));
+    assert_eq!(state["undeclared"]["ignored_count"], 2);
+    let kinds = events(&pool, &host).await;
+    for kind in ["drift.reverted", "drift.adopted", "drift.ignored"] {
+        assert!(kinds.contains(&kind.to_owned()), "{kind} in {kinds:?}");
+    }
 }

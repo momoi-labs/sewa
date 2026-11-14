@@ -122,6 +122,8 @@ export type Change = {
   created_by: string;
   closed_at: string | null;
   edit_count: number;
+  /** The host a revert change applies the approved state on again, or null. */
+  revert_host: Named | null;
 };
 
 export type Edit =
@@ -163,9 +165,23 @@ export type AffectedHost = {
   current_config: string;
   proposed_config: string | null;
   plan: Plan | null;
+  /** What the host did with the change's approval, or null before one. */
+  result: HostResult | null;
 };
 
-export type ChangeDetail = Change & { edits: EditEntry[]; hosts: AffectedHost[] };
+/** `replan`: the plan changed before the host applied it, so it needs a new approval. */
+export type ResultStatus = 'waiting' | 'applied' | 'failed' | 'replan';
+
+export type HostResult = {
+  status: ResultStatus;
+  plan_hash: string;
+  log: string | null;
+  reported_at: string | null;
+};
+
+export type ApprovalEntry = { id: string; by: string; passkey: string; created_at: string; host_count: number };
+
+export type ChangeDetail = Change & { edits: EditEntry[]; hosts: AffectedHost[]; approvals: ApprovalEntry[] };
 
 export type Adjustment = { kind: ItemKind; name: string } & (
   | { action: 'set'; version: string }
@@ -180,8 +196,23 @@ export type HostState = {
   items: Item[];
   config: string;
   health: string | null;
-  drift: (Plan & { status: 'in_sync' | 'drift' | 'error' }) | null;
-  undeclared: { manager: string; packages: string[]; explicit_count: number; reported_at: string } | null;
+  drift:
+    | (Plan & {
+        status: 'in_sync' | 'drift' | 'error';
+        /** Ignore hid this drift. */
+        ignored: boolean;
+        /** The host's open revert change, or null. */
+        revert_change: string | null;
+      })
+    | null;
+  undeclared: {
+    manager: string;
+    packages: string[];
+    /** Undeclared packages that Ignore hid. */
+    ignored_count: number;
+    explicit_count: number;
+    reported_at: string;
+  } | null;
 };
 
 export const hostStateQuery = (id: string) =>
@@ -228,4 +259,77 @@ export function addEdit(edit: Edit) {
 
 export function discardChange(id: string) {
   return api<Change>('POST', `/api/changes/${encodeURIComponent(id)}/discard`);
+}
+
+export function revertDrift(host: string) {
+  return api<Change>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/revert`);
+}
+
+/** Adds an undeclared package to a role, or to the host's adjustments when `role` is null. */
+export function adoptPackage(host: string, pkg: string, role: string | null) {
+  return api<Change>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/adopt`, { package: pkg, role });
+}
+
+export function ignoreDrift(host: string) {
+  return api<null>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/ignore`);
+}
+
+export type Passkey = { id: string; login: string; name: string; credential_id: string; created_at: string };
+
+export const passkeysQuery = queryOptions({
+  queryKey: ['passkeys'],
+  queryFn: () => api<Passkey[]>('GET', '/api/passkeys'),
+});
+
+/** What the browser needs to create a passkey. Bytes are unpadded base64url. */
+export type PasskeyOptions = {
+  challenge: string;
+  rp: { id: string; name: string };
+  user: { id: string; name: string };
+  algorithm: number;
+  exclude_credentials: string[];
+};
+
+export type PasskeyRegistration = {
+  name: string;
+  credential_id: string;
+  public_key: string;
+  algorithm: number;
+  authenticator_data: string;
+  client_data_json: string;
+};
+
+export function passkeyOptions() {
+  return api<PasskeyOptions>('POST', '/api/passkeys/options');
+}
+
+export function registerPasskey(registration: PasskeyRegistration) {
+  return api<Passkey>('POST', '/api/passkeys', registration);
+}
+
+export type HostPlan = { host_id: string; instance_uid: string; config_hash: string; plan_hash: string };
+
+/** What an approval of a change signs now. */
+export type ApprovalOptions = {
+  challenge: string;
+  rp_id: string;
+  allow_credentials: string[];
+  signed_text: string;
+  change_id: string;
+  hosts: HostPlan[];
+};
+
+export type Assertion = {
+  credential_id: string;
+  authenticator_data: string;
+  client_data_json: string;
+  signature: string;
+};
+
+export function approvalOptions(change: string) {
+  return api<ApprovalOptions>('POST', `/api/changes/${encodeURIComponent(change)}/approval`);
+}
+
+export function approveChange(change: string, assertion: Assertion) {
+  return api<Change>('POST', `/api/changes/${encodeURIComponent(change)}/approve`, assertion);
 }

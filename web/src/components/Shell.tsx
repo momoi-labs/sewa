@@ -1,12 +1,12 @@
 import { ApplicationShell, type ApplicationShellGroup, ThemeSelector } from '@momoi-labs/kiso-react';
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { GitPullRequestDraft, Layers, Server } from 'lucide-react';
+import { GitPullRequestDraft, KeyRound, Layers, Server } from 'lucide-react';
 import { useState } from 'react';
 
 import { applyTheme, savedTheme, type Theme } from './theme';
 
 /** The frame of every page: the brand, the theme, and the destinations
- *  Hosts, Roles and Changes. */
+ *  Hosts, Roles, Changes and Passkeys. */
 export function Shell() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -35,6 +35,13 @@ export function Shell() {
           leading: <GitPullRequestDraft className="icon" aria-hidden="true" />,
           active: pathname.startsWith('/changes'),
           onClick: () => void navigate({ to: '/changes' }),
+        },
+        {
+          href: '/passkeys',
+          label: 'Passkeys',
+          leading: <KeyRound className="icon" aria-hidden="true" />,
+          active: pathname.startsWith('/passkeys'),
+          onClick: () => void navigate({ to: '/passkeys' }),
         },
       ],
     },

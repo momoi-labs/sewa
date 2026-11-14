@@ -7,8 +7,10 @@ machines over time and keeps each one as it was declared.
 
 sewa is early. Hosts can enroll and report their status, and a web app
 lists them. Roles and host adjustments are edited in a draft change, and
-each agent plans the change and its current desired state with mise
-without applying anything. See [docs/api.md](docs/api.md).
+each agent plans the change and its current desired state with mise. A
+person approves a change with a passkey, and each agent applies it only
+after it checks the signature against the keys its install pinned. See
+[docs/api.md](docs/api.md).
 
 ## What sewa will do
 

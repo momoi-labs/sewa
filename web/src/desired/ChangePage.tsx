@@ -21,6 +21,8 @@ import {
   EmptyStateTitle,
   GridPane,
   Lifecycle,
+  LogView,
+  LogViewLine,
   PageHeader,
   PageHeaderTitle,
   PaneGrid,
@@ -47,6 +49,8 @@ import { type AffectedHost, type ChangeDetail, changeQuery, discardChange, hosts
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatDateTime } from '../format';
 import { HostStatusBadge } from '../hosts/HostStatusBadge';
+import { ApplyResultBadge, applySummary } from './ApplyResult';
+import { ApproveDialog } from './ApproveDialog';
 import { ChangeStatusBadge } from './ChangeStatusBadge';
 import { diffLines } from './compare';
 import { describeEdit } from './describeEdit';
@@ -59,7 +63,18 @@ export function ChangePage() {
   const { changeId } = route.useParams();
   const change = useQuery(changeQuery(changeId));
   const [discarding, setDiscarding] = useState(false);
-  const title = change.data ? `Change of ${formatDateTime(change.data.created_at)}` : null;
+  const [approving, setApproving] = useState(false);
+  const title = change.data
+    ? change.data.revert_host
+      ? `Revert of ${change.data.revert_host.name}`
+      : `Change of ${formatDateTime(change.data.created_at)}`
+    : null;
+  const summary = change.data ? applySummary(change.data.hosts) : null;
+  const replan = change.data?.hosts.some((host) => host.result?.status === 'replan') ?? false;
+  const approvable =
+    !!change.data &&
+    ((change.data.status === 'draft' && change.data.hosts.length > 0) ||
+      (change.data.status === 'approved' && replan));
 
   return (
     <>
@@ -87,6 +102,13 @@ export function ChangePage() {
             {change.data && (
               <Lifecycle
                 status={<ChangeStatusBadge status={change.data.status} />}
+                actions={
+                  approvable && (
+                    <Button size="sm" onClick={() => setApproving(true)}>
+                      {change.data.status === 'approved' ? 'Approve again' : 'Approve'}
+                    </Button>
+                  )
+                }
                 destructive={
                   change.data.status === 'draft' && (
                     <Button size="sm" variant="destructive" onClick={() => setDiscarding(true)}>
@@ -102,21 +124,29 @@ export function ChangePage() {
             <p className="muted">
               Opened by <span className="mono">{change.data.created_by}</span>.{' '}
               {change.data.status === 'draft'
-                ? 'Each host plans the draft. Nothing is applied until a change is approved.'
+                ? change.data.revert_host
+                  ? 'Approving it applies the approved state on the host again, with the plan that fixes its drift.'
+                  : 'Each host plans the draft. Nothing is applied until a change is approved.'
                 : change.data.closed_at && `Closed ${formatDateTime(change.data.closed_at)}.`}
             </p>
           )}
+          {summary && <p className="t-label">{summary}.</p>}
           <Card className="detail-tabs" data-fill="false">
             <Tabs defaultValue="plans">
               <TabsList aria-label="Change details">
                 <TabsTrigger value="plans">Plans</TabsTrigger>
                 <TabsTrigger value="edits">Edits</TabsTrigger>
+                <TabsTrigger value="approvals">Approvals</TabsTrigger>
               </TabsList>
               <TabsContent value="plans">{change.data ? <Plans change={change.data} /> : <Skeleton />}</TabsContent>
               <TabsContent value="edits">{change.data ? <Edits change={change.data} /> : <Skeleton />}</TabsContent>
+              <TabsContent value="approvals">
+                {change.data ? <Approvals change={change.data} /> : <Skeleton />}
+              </TabsContent>
             </Tabs>
           </Card>
           {change.data && <DiscardDialog change={change.data} open={discarding} onOpenChange={setDiscarding} />}
+          {change.data && <ApproveDialog change={change.data} open={approving} onOpenChange={setApproving} />}
         </>
       )}
     </>
@@ -156,10 +186,12 @@ function HostPlan({ host }: { host: AffectedHost }) {
     <div className="stack">
       <div className="row-wrap">
         <HostStatusBadge status={host.status} />
+        {host.result && <ApplyResultBadge status={host.result.status} />}
         <Link to="/hosts/$hostId" params={{ hostId: host.id }}>
           Open the host
         </Link>
       </div>
+      {host.result && <HostResult result={host.result} />}
       <PlanView plan={host.plan} waiting={waiting} />
       {host.proposed_config !== null && (
         <Disclosure summary="Config change">
@@ -167,6 +199,72 @@ function HostPlan({ host }: { host: AffectedHost }) {
         </Disclosure>
       )}
     </div>
+  );
+}
+
+/** What the host's agent said about the approval. */
+function HostResult({ result }: { result: NonNullable<AffectedHost['result']> }) {
+  const reported = result.reported_at ? ` Reported ${formatDateTime(result.reported_at)}.` : '';
+  const text = {
+    waiting: 'The agent applies the plan on its next report.',
+    applied: `The agent applied the plan with mise bootstrap.${reported}`,
+    failed: `The agent did not apply the plan.${reported}`,
+    replan: `The plan changed before the agent applied it, so nothing was applied. Approve the change again.${reported}`,
+  }[result.status];
+  return (
+    <>
+      <p className="muted">{text}</p>
+      {result.log && result.status !== 'waiting' && (
+        <Disclosure summary="Apply log" open={result.status === 'failed' || undefined}>
+          <LogView className="apply-log" aria-label="Apply log">
+            {result.log.split('\n').map((line, index) => (
+              <LogViewLine key={index}>{line}</LogViewLine>
+            ))}
+          </LogView>
+        </Disclosure>
+      )}
+    </>
+  );
+}
+
+function Approvals({ change }: { change: ChangeDetail }) {
+  if (change.approvals.length === 0) {
+    return (
+      <EmptyState variant="informational">
+        <EmptyStateTitle>No approvals</EmptyStateTitle>
+        <EmptyStateDescription>
+          {change.status === 'draft'
+            ? 'Approve the change to sign the plans with your passkey.'
+            : 'Nobody approved this change.'}
+        </EmptyStateDescription>
+      </EmptyState>
+    );
+  }
+  return (
+    <TableFrame frame="none">
+      <Table aria-label="Approvals">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Time</TableHead>
+            <TableHead>By</TableHead>
+            <TableHead>Passkey</TableHead>
+            <TableHead className="num">Hosts</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {change.approvals.map((entry) => (
+            <TableRow key={entry.id}>
+              <TableCell>
+                <time dateTime={entry.created_at}>{formatDateTime(entry.created_at)}</time>
+              </TableCell>
+              <TableCell className="mono">{entry.by}</TableCell>
+              <TableCell>{entry.passkey}</TableCell>
+              <TableCell className="num">{entry.host_count}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableFrame>
   );
 }
 

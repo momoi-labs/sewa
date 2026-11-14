@@ -14,6 +14,7 @@ import { ChangePage } from './desired/ChangePage';
 import { ChangesPage } from './desired/ChangesPage';
 import { RolePage } from './desired/RolePage';
 import { RolesPage } from './desired/RolesPage';
+import { PasskeysPage } from './passkeys/PasskeysPage';
 
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
@@ -40,7 +41,17 @@ const changeRoute = createRoute({
   component: ChangePage,
 });
 
-const routeTree = rootRoute.addChildren([hostsRoute, hostRoute, rolesRoute, roleRoute, changesRoute, changeRoute]);
+const passkeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/passkeys', component: PasskeysPage });
+
+const routeTree = rootRoute.addChildren([
+  hostsRoute,
+  hostRoute,
+  rolesRoute,
+  roleRoute,
+  changesRoute,
+  changeRoute,
+  passkeysRoute,
+]);
 
 export function createAppRouter(queryClient: QueryClient, history?: RouterHistory) {
   return createRouter({ routeTree, context: { queryClient }, history });
