@@ -25,6 +25,9 @@ export type Host = {
   agent: Agent | null;
 };
 
+/** An item of `GET /api/hosts`: the host, and its roles without the built-in one. */
+export type ListedHost = Host & { roles: Named[] };
+
 export type Created = {
   host: Host;
   install_command: string;
@@ -104,7 +107,7 @@ export const queryDefaults = {
 
 export const hostsQuery = queryOptions({
   queryKey: ['hosts'],
-  queryFn: () => api<Host[]>('GET', '/api/hosts'),
+  queryFn: () => api<ListedHost[]>('GET', '/api/hosts'),
   refetchInterval: poll,
 });
 
