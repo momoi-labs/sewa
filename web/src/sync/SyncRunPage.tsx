@@ -32,6 +32,7 @@ import { ErrorAlert, errorCode } from '../components/ErrorAlert';
 import { PasskeyError } from '../components/PasskeyError';
 import { formatClock, formatDateTime } from '../format';
 import { signApproval } from '../webauthn';
+import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
 import { finishedAt, planState, plural, tally } from './sync';
 
@@ -113,7 +114,10 @@ function Run({ sync }: { sync: Sync }) {
       label: 'Pick hosts',
       state: 'done',
       meta: plural(sync.hosts.length, 'host'),
-      detail: <p className="muted">{sync.hosts.map((host) => host.name).join(', ')}.</p>,
+      detail: <p className="muted">{sync.hosts
+            .map((host) => host.name)
+            .sort(byName)
+            .join(', ')}.</p>,
     },
     {
       key: 'plans',

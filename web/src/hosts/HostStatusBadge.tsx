@@ -15,10 +15,11 @@ const labels: Record<HostStatus, string> = {
 };
 
 /** A host's status: neutral while it waits to enroll, success when its agent
- *  reports, danger once the agent goes quiet. */
+ *  reports, danger once the agent goes quiet. Only the danger dot pulses, and
+ *  Kiso stops the pulse under prefers-reduced-motion. */
 export function HostStatusBadge({ status }: { status: HostStatus }) {
   return (
-    <StatusBadge tone={tones[status]} pulse={status === 'connected'}>
+    <StatusBadge tone={tones[status]} pulse={status === 'disconnected'}>
       {labels[status]}
     </StatusBadge>
   );

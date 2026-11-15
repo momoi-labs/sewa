@@ -24,7 +24,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | `Shell` | The application shell with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand slot is tinted with the accent surface and shows the bold name over the instance address from `GET /api/instance`. |
 | `SewaMark` | The sewa emblem in the shell's brand. The brand kit is in `docs/brand/`. |
-| `HostStatusBadge` | A host's status: waiting, connected, or disconnected. |
+| `HostStatusBadge` | A host's status: waiting, connected, or disconnected. Only the disconnected dot pulses. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
 | `ErrorPage` | The screen when a page's data fails to load with `not_admin`, a 5xx, or no answer: a brand illustration, the code, a title, one line, and one action. It fills the page with no shell, and the root route renders it. |
 | `Unknown` | A missing value: a muted dash with a tooltip that says why. |
@@ -35,7 +35,7 @@ contract disagree, the contract wins and this file has a bug.
 | `ItemTable` | A role's items as tables, one per source (OS default, Homebrew, Cask, pacman, AUR, mise tools), each in a Disclosure with its count. A Search filters the rows. The add field is a kind Select and a ChipInput with no chips, which keeps the prefix syntax and the suggestions from the other roles. Version (Input) and OS (Select) change in the row. Read-only for the built-in role. |
 | `SaveRoleDialog` | The items a role save adds, changes, and removes, and the button that saves them. |
 | `ItemForm` | Adds a host adjustment: a package or a mise tool with a version. |
-| `PlanByPackage` | The Plans step of a sync by package: Install, Update and Remove tables (Package, Manager, Version or from and to, Hosts), each with its count and hidden when empty. A row merges the hosts that make the same change with the same versions. The Hosts cell says "all (N)", the names, or "build-1, build-2 +6" with a Popover that lists every host. A Search and an "only host" Select narrow the rows. Hosts with no plan to sign go in one line at the end, by reason. |
+| `PlanByPackage` | The Plans step of a sync by package: Install, Update and Remove tables, each under a heading with an icon (Package, Manager, Version or from and to, Hosts), each with its count and hidden when empty. A row merges the hosts that make the same change with the same versions. The Hosts cell says "all (N)", the names, or "build-1, build-2 +6" with a Popover that lists every host. A Search and an "only host" Select narrow the rows. Hosts with no plan to sign go in one line at the end, by reason. |
 | `PlanView` | A mise bootstrap plan as a table, removals first and in danger. |
 | `PasskeyError` | A failed passkey prompt, or an API failure through `ErrorAlert`. |
 | `AddPasskeyDialog` | Names a passkey, then lets the browser create it. |
