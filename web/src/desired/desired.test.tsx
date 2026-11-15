@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { Host, HostState, Plan, Role } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { diffItems } from './items';
+import { groupItems } from './ItemTable';
 
 const host: Host = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -83,7 +84,7 @@ describe('roles', () => {
       [`PUT /api/roles/${role.id}`]: { status: 200, body: saved },
     });
     renderRoute(`/roles/${role.id}`);
-    await user.type(await screen.findByRole('combobox', { name: 'Packages' }), 'ripgrep{Enter}');
+    await user.type(await screen.findByRole('combobox', { name: 'Add a package' }), 'ripgrep{Enter}');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('dialog');
     const row = within(dialog).getByText('ripgrep').closest('tr')!;
@@ -93,6 +94,74 @@ describe('roles', () => {
     await waitFor(() =>
       expect(calls.find((call) => call.method === 'PUT')?.body).toEqual({ name: 'base', items: saved.items }),
     );
+  });
+});
+
+describe('role items', () => {
+  it('filters the rows and groups them by source', async () => {
+    const user = userEvent.setup();
+    const many: Role = {
+      ...role,
+      items: [
+        { kind: 'package', name: 'git', version: 'latest', os: null },
+        { kind: 'package', name: 'brew:jq', version: '1.7', os: 'macos' },
+        { kind: 'package', name: 'brew:gnupg', version: 'latest', os: 'macos' },
+        { kind: 'package', name: 'aur:yay-bin', version: 'latest', os: 'linux' },
+        { kind: 'tool', name: 'node', version: '24', os: null },
+      ],
+    };
+    mockApi({
+      [`GET /api/roles/${role.id}`]: { status: 200, body: many },
+      'GET /api/roles': { status: 200, body: [builtin, many] },
+    });
+    renderRoute(`/roles/${role.id}`);
+    expect(await screen.findByRole('table', { name: 'Homebrew' })).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'Cask' })).toBeNull();
+    expect(screen.getByText('(2)')).toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: 'Filter items' }), 'jq');
+    expect(screen.getByText('(1 of 2)')).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'mise tools' })).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Version of brew:jq' })).toHaveValue('1.7');
+    expect(screen.queryByRole('textbox', { name: 'Version of brew:gnupg' })).toBeNull();
+  });
+
+  it('shows the built-in role with no edit controls', async () => {
+    mockApi({
+      [`GET /api/roles/${builtin.id}`]: { status: 200, body: builtin },
+      'GET /api/roles': { status: 200, body: [builtin, role] },
+    });
+    renderRoute(`/roles/${builtin.id}`);
+    expect(await screen.findByText(/sewa manages this role, so it is read-only/)).toBeInTheDocument();
+    expect(screen.getByText('mise')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Add a package' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove mise' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Version of mise' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
+});
+
+describe('groupItems', () => {
+  it('puts each item in its source, sorted, and leaves out empty groups', () => {
+    const items = [
+      { kind: 'package' as const, name: 'zsh', version: 'latest', os: null },
+      { kind: 'package' as const, name: 'bat', version: 'latest', os: null },
+      { kind: 'package' as const, name: 'brew-cask:firefox', version: 'latest', os: null },
+      { kind: 'package' as const, name: 'pacman:docker', version: 'latest', os: null },
+      { kind: 'tool' as const, name: 'npm:prettier', version: 'latest', os: null },
+    ];
+    const groups = groupItems(items);
+    expect(groups.map((group) => [group.key, group.items.map((item) => item.name)])).toEqual([
+      ['default', ['bat', 'zsh']],
+      ['brew-cask', ['brew-cask:firefox']],
+      ['pacman', ['pacman:docker']],
+      ['tool', ['npm:prettier']],
+    ]);
+    expect(groupItems(items, 'fire').map((group) => [group.key, group.items.length, group.total])).toEqual([
+      ['default', 0, 2],
+      ['brew-cask', 1, 1],
+      ['pacman', 0, 1],
+      ['tool', 0, 1],
+    ]);
   });
 });
 

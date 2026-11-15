@@ -16,7 +16,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, and the chip remove button exception below. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
+| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, the bar height the sidebar header and the top bar share, and the role item tables (the full-width role form and the phone cards, see Exceptions). `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 
@@ -32,7 +32,7 @@ contract disagree, the contract wins and this file has a bug.
 | `NotFound` | The screen for an unknown path. |
 | `AddHostDialog` | Creates a host and shows its install command once. |
 | `AddRoleDialog` | Creates an empty role, then opens it. |
-| `ItemChips` | A role's packages or mise tools as chips in a ChipInput, each with its version and OS, with suggestions from the other roles. |
+| `ItemTable` | A role's items as tables, one per source (OS default, Homebrew, Cask, pacman, AUR, mise tools), each in a Disclosure with its count. A Search filters the rows. The add field is a kind Select and a ChipInput with no chips, which keeps the prefix syntax and the suggestions from the other roles. Version (Input) and OS (Select) change in the row. Read-only for the built-in role. |
 | `SaveRoleDialog` | The items a role save adds, changes, and removes, and the button that saves them. |
 | `ItemForm` | Adds a host adjustment: a package or a mise tool with a version. |
 | `PlanView` | A mise bootstrap plan as a table, removals first and in danger. |
@@ -58,7 +58,7 @@ contract disagree, the contract wins and this file has a bug.
 | Host (`/hosts/$hostId`) | List-detail, separate screens: the detail screen. |
 | Roles (`/roles`) | List-detail, separate screens: the list screen. |
 | Add a role | CRUD: a small record created in a dialog. |
-| Role (`/roles/$roleId`) | Configuration form in numbered steps (`.form-steps`): Role, Packages, mise tools. A step with complete fields shows a check. FormActions is sticky and shows unsaved edits. Hosts get roles on the host page, not here. |
+| Role (`/roles/$roleId`) | Configuration form in numbered steps (`.form-steps`): Role, then Items in an `ItemTable`. A step with complete fields shows a check. FormActions is sticky and shows unsaved edits. Hosts get roles on the host page, not here. The built-in role shows its items read-only, with one line that sewa manages it, and no FormActions. |
 | Save a role | Confirmations: a dialog with the item diff (added, changed, removed) and "Save". |
 | Sync (`/sync`) | A StepList of the run to come: the edits since the last sync, then the host picker (All, All Linux, All macOS, None), then Plans, Sign and Apply as pending. Recent syncs sit in a table below. |
 | Sync run (`/sync/$syncId`) | A StepList of the run: Pick hosts, Plans, Sign, Apply. A finished step keeps a one-line summary. The hosts' apply steps are a second StepList in their own card, because a StepList nested in a step takes that step's state for every mark. A finished run shows a success or error Alert. |
@@ -86,12 +86,16 @@ contract disagree, the contract wins and this file has a bug.
   `alert` region. The illustrations are the brand's files in
   `web/src/components/error-art/`, inlined in the bundle, not Kiso tokens. Kiso has no illustration size token, so the
   height is `--spacing-4xl` times 3.
-- A chip in a ChipInput keeps its remove button in view. Kiso 1.9 lets a
-  chip wider than its field scroll sideways, so on a phone a long package
-  chip such as `brew-cask:ghostty` with an `os` option hid its X past the
-  field's edge. `product.css` makes the remove button sticky at the chip's
-  end edge, on the chip's own fill. Kiso should keep a chip's remove button
-  visible.
+- The role form is as wide as the page. Kiso keeps `.form-page` at most
+  720 px, and a role with many items needs the room for its Name, Manager,
+  Version and OS columns. `product.css` lifts the limit for `.role-form`
+  only.
+- On a phone each row of a role's item tables is a card: the name and the
+  remove button, then the manager, then the version and the OS. Kiso keeps
+  table rows on a phone and drops columns, or scrolls sideways. Here every
+  column is an input the person edits, so none can go, and the user asked
+  for no sideways scroll at 390 px. The cards keep the table markup, so the
+  column names stay in the accessibility tree.
 
 ## Verify
 

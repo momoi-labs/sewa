@@ -137,7 +137,7 @@ export type Named = { id: string; name: string };
 export type Role = {
   id: string;
   name: string;
-  /** The built-in role: every host has it, and it holds packages only. */
+  /** The built-in role: every host has it, and sewa manages it, so it is read-only. */
   builtin: boolean;
   created_at: string;
   items: Item[];

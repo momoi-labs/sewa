@@ -28,7 +28,7 @@
 /* Numbered steps of a configuration form, as in the role page. The number
    hangs in the gutter the fields are indented by, on the title's line. A
    step whose fields are complete shows a check. */
-.form-steps { max-width: 760px; counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
+.form-steps { counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
 .form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
 .form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
 .form-steps > li > .t-caps {
@@ -53,13 +53,46 @@
 .host-picker-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; cursor: pointer; }
 .host-picker-name { font-weight: var(--type-weight-medium); min-width: 8rem; }
 
-/* A chip in a ChipInput scrolls when it is wider than the field. Its remove
-   button stays on the chip's end edge so it never scrolls out of view. */
-.chip-input .chip:not(.filter-chip) > [data-slot="chip-remove"] {
-  position: sticky; inset-inline-end: 0;
-  background: inherit;
-  box-shadow: calc(var(--spacing-xs) * -1) 0 0 0 var(--color-secondary);
-}
-.chip-input .chip:not(.filter-chip)[data-state="invalid"] > [data-slot="chip-remove"] {
-  box-shadow: calc(var(--spacing-xs) * -1) 0 0 0 var(--color-danger-surface);
+/* A role's items: a search and an add field above tables grouped by
+   source. The groups share column widths. The role form uses the page's
+   width for the tables; see Exceptions in docs/kiso.md. */
+.role-form.form-page { max-width: none; }
+.item-toolbar { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: start; }
+.item-search { flex: 1 1 14rem; }
+.item-add { flex: 2 1 22rem; display: flex; gap: var(--spacing-sm); align-items: start; min-width: 0; }
+.item-add > .select-trigger, .item-add > [data-slot="select-trigger"] { flex: none; inline-size: 9rem; }
+.item-add > .chip-input { flex: 1; min-width: 0; }
+.item-table .table { table-layout: fixed; }
+.item-col-manager { inline-size: 10rem; }
+.item-col-version { inline-size: 12rem; }
+.item-col-os { inline-size: 11rem; }
+.item-col-remove { inline-size: calc(var(--size-control-sm) + 2 * var(--spacing-sm)); }
+.item-name { overflow-wrap: anywhere; }
+.item-remove { text-align: end; }
+
+/* On a phone each row is a card: the name and the remove button on top,
+   then the manager, the version and the OS. See Exceptions in
+   docs/kiso.md. */
+@media (max-width: 720px) {
+  .item-add { flex-basis: 100%; }
+  .item-table .table, .item-table .table tbody { display: block; }
+  .item-table .table thead, .item-table colgroup { display: none; }
+  .item-table .table tbody tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    grid-template-areas: "name name remove" "manager manager manager" "version os os";
+    gap: var(--spacing-xs) var(--spacing-sm); padding: var(--spacing-sm) var(--spacing-md);
+    border-block-end: 1px solid var(--color-border);
+  }
+  .item-table .table tbody tr:last-child { border-block-end: 0; }
+  .item-table .table tbody td { display: block; padding: 0; border: 0; height: auto; min-width: 0; }
+  .item-table .table .item-name { grid-area: name; align-self: center; font-weight: var(--type-weight-medium); }
+  .item-table .table .item-manager { grid-area: manager; color: var(--color-muted-foreground); }
+  .item-table .table .item-version { grid-area: version; }
+  .item-table .table .item-os { grid-area: os; }
+  .item-table .table .item-remove { grid-area: remove; }
+  .item-table .table :is(.item-version, .item-os)::before {
+    content: attr(data-label); display: block;
+    font-size: var(--type-size-metadata); color: var(--color-muted-foreground);
+  }
+  .item-table .table .item-manager::before { content: attr(data-label) ": "; }
 }

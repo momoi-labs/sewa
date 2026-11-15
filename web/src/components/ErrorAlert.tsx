@@ -48,13 +48,9 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'The role has too many items',
     body: 'Split the items into two roles, then save again.',
   },
-  bootstrap_packages_only: {
-    title: 'The built-in role holds packages only',
-    body: 'Put mise tools in another role.',
-  },
   builtin_role: {
-    title: 'The built-in role cannot change this way',
-    body: 'Every host has the built-in role, and it keeps its name. Edit its packages on its role page.',
+    title: 'The built-in role is read-only',
+    body: 'sewa manages the built-in role. Put the item in another role.',
   },
   invalid_edit: {
     title: 'The edit was not saved',
