@@ -358,6 +358,21 @@ describe('sync', () => {
     expect(screen.getByText(/No plan to sign: Offline: build-2\. Plan failed: build-1/)).toBeInTheDocument();
     expect(screen.getByText('mise: cannot read the config')).toBeInTheDocument();
   });
+
+  it('shows the changes and the error of a partial plan', async () => {
+    const partial = { ...plan, error: 'mise: tool not found: node@99' };
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: { ...ready, hosts: [picked(host.id, host.name, { plan: partial })] },
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    const install = await screen.findByRole('table', { name: 'Install (1)' });
+    expect(within(install).getByText('jq')).toBeInTheDocument();
+    expect(screen.getByText('mise: tool not found: node@99')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
+  });
 });
 
 describe('drift actions', () => {
