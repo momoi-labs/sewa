@@ -90,4 +90,6 @@ background.
   captions, and the cursor was painted over with the box color before the
   trace. Light tones that touch the background, like the ground shadow, were
   dropped. The colors are ink, sage, white, and mist (`#E7F3E3`) for the
-  smoke. The `-dark` files add the ivory halo.
+  smoke. Mist is kept only in the smoke clouds, which stand apart from the
+  cat and the box. Pale antialias pieces inside that shape, like the edges of
+  the inner ears, take the cat color. The `-dark` files add the ivory halo.
