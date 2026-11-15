@@ -1,4 +1,5 @@
 import {
+  Badge,
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -7,49 +8,34 @@ import {
   BreadcrumbSeparator,
   Button,
   Card,
-  EmptyState,
-  EmptyStateDescription,
-  EmptyStateTitle,
+  Form,
+  FormActions,
+  FormField,
   PageHeader,
+  PageHeaderDescription,
   PageHeaderTitle,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableFrame,
-  TableHead,
-  TableHeader,
-  TableRow,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
 } from '@momoi-labs/kiso-react';
 import { useQuery } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
-import { useState } from 'react';
+import { type FormEvent, type ReactNode, useState } from 'react';
 
-import { hostsQuery, type Role, roleQuery } from '../api';
-import { ErrorAlert } from '../components/ErrorAlert';
-import { compareItems, compareNamed } from './compare';
-import { DifferenceBadge } from './DifferenceBadge';
-import { DraftNotice } from './DraftNotice';
-import { ItemForm } from './ItemForm';
-import { ItemsTable } from './ItemsTable';
-import { useEdit } from './useEdit';
+import { type Item, type Role, roleQuery, rolesQuery } from '../api';
+import { ErrorAlert, errorCode } from '../components/ErrorAlert';
+import { ItemChips } from './ItemChips';
+import { diffItems, diffSize, itemProblem } from './items';
+import { SaveRoleDialog } from './SaveRoleDialog';
 
 const route = getRouteApi('/roles/$roleId');
 
-/** One role: its items and its hosts. Every edit goes into the draft change. */
+const NAME = /^[A-Za-z0-9._-]{1,63}$/;
+
+/** One role, edited in numbered steps: its name, its packages, and its mise
+ *  tools. Save shows what changes and asks to confirm. Hosts get roles on
+ *  the host page. */
 export function RolePage() {
   const { roleId } = route.useParams();
   const role = useQuery(roleQuery(roleId));
-
 
   return (
     <>
@@ -71,19 +57,18 @@ export function RolePage() {
       ) : (
         <>
           <PageHeader>
-            <PageHeaderTitle>{role.data?.name ?? <Skeleton />}</PageHeaderTitle>
+            <div className="row-wrap">
+              <PageHeaderTitle>{role.data?.name ?? <Skeleton />}</PageHeaderTitle>
+              {role.data?.builtin && <Badge variant="neutral">Built in</Badge>}
+            </div>
+            <PageHeaderDescription>
+              {role.data?.builtin
+                ? 'What sewa needs on every host. It holds packages only.'
+                : 'Packages and mise tools for the hosts with this role. Give it to a host on the host page.'}
+            </PageHeaderDescription>
           </PageHeader>
-          <DraftNotice />
-          {role.isError && <ErrorAlert error={role.error} thing="role" onRetry={() => void role.refetch()} />}
-          <Card className="detail-tabs" data-fill="false">
-            <Tabs defaultValue="items" data-shadow-style="none">
-              <TabsList aria-label="Role details">
-                <TabsTrigger value="items">Items</TabsTrigger>
-                <TabsTrigger value="hosts">Hosts</TabsTrigger>
-              </TabsList>
-              <TabsContent value="items">{role.data ? <Items role={role.data} /> : <Skeleton />}</TabsContent>
-              <TabsContent value="hosts">{role.data ? <Hosts role={role.data} /> : <Skeleton />}</TabsContent>
-            </Tabs>
+          <Card className="form-page">
+            {role.data ? <RoleForm key={role.data.id} role={role.data} /> : <Skeleton />}
           </Card>
         </>
       )}
@@ -91,129 +76,149 @@ export function RolePage() {
   );
 }
 
-function Items({ role }: { role: Role }) {
-  const edit = useEdit();
-  const rows = compareItems(role.items, role.proposed_items);
-  return (
-    <div className="stack">
-      {edit.isError && <ErrorAlert error={edit.error} thing="role" />}
-      {rows.length === 0 ? (
-        <EmptyState variant="first-run">
-          <EmptyStateTitle>No items yet</EmptyStateTitle>
-          <EmptyStateDescription>Add a package or a mise tool. It goes into the draft change.</EmptyStateDescription>
-        </EmptyState>
-      ) : (
-        <ItemsTable
-          rows={rows}
-          label={`Items of ${role.name}`}
-          onRemove={(row) =>
-            edit.mutate({
-              op: 'role_item_remove',
-              role: role.id,
-              kind: row.kind,
-              name: row.name,
-            })
-          }
-        />
-      )}
-      <h3 className="t-h3">Add an item</h3>
-      <ItemForm
-        submitLabel="Add to draft"
-        onAdd={(item) => edit.mutateAsync({ op: 'role_item_set', role: role.id, ...item })}
-      />
-    </div>
-  );
+/** The names other roles use for this kind, to suggest. */
+function namesOf(roles: Role[] | undefined, self: string, kind: Item['kind']): string[] {
+  const names = new Set<string>();
+  for (const role of roles ?? []) {
+    if (role.id === self) continue;
+    for (const item of role.items) if (item.kind === kind) names.add(item.name);
+  }
+  return [...names].sort();
 }
 
-function Hosts({ role }: { role: Role }) {
-  const edit = useEdit();
-  const hosts = useQuery(hostsQuery);
-  const [chosen, setChosen] = useState('');
-  const rows = compareNamed(role.hosts, role.proposed_hosts);
-  const have = new Set(rows.filter((row) => row.difference !== 'removed').map((row) => row.id));
-  const others = (hosts.data ?? []).filter((host) => !have.has(host.id));
+function RoleForm({ role }: { role: Role }) {
+  const roles = useQuery(rolesQuery);
+  const [saved, setSaved] = useState(role);
+  const [name, setName] = useState(role.name);
+  const [packages, setPackages] = useState(role.items.filter((item) => item.kind === 'package'));
+  const [tools, setTools] = useState(role.items.filter((item) => item.kind === 'tool'));
+  const [confirming, setConfirming] = useState(false);
+  const [failure, setFailure] = useState<unknown>(null);
+
+  const items = [...packages, ...tools];
+  const diff = diffItems(saved.items, items);
+  const renamed = name.trim() !== saved.name;
+  const dirty = renamed || diffSize(diff) > 0;
+  const nameProblem = !name.trim()
+    ? 'Enter a name.'
+    : !NAME.test(name.trim())
+      ? 'Use up to 63 letters, digits, dots, dashes or underscores.'
+      : errorCode(failure) === 'name_taken'
+        ? 'A role has this name. Choose another.'
+        : undefined;
+  const ready = !nameProblem && items.every((item) => itemProblem(item) === null);
+
+  function discard() {
+    setName(saved.name);
+    setPackages(saved.items.filter((item) => item.kind === 'package'));
+    setTools(saved.items.filter((item) => item.kind === 'tool'));
+    setFailure(null);
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (dirty && ready) setConfirming(true);
+  }
+
+  let message: ReactNode;
+  if (dirty)
+    message = (
+      <>
+        <strong>Unsaved edits.</strong> Saving changes the desired state. No host changes until you sync.
+      </>
+    );
+  else message = 'Saved. Hosts get the role at their next sync.';
 
   return (
-    <div className="stack">
-      {edit.isError && <ErrorAlert error={edit.error} thing="role" />}
-      {hosts.isError && <ErrorAlert error={hosts.error} onRetry={() => void hosts.refetch()} />}
-      {rows.length === 0 ? (
-        <EmptyState variant="informational">
-          <EmptyStateTitle>No hosts have this role</EmptyStateTitle>
-          <EmptyStateDescription>Give it to a host below. That goes into the draft change.</EmptyStateDescription>
-        </EmptyState>
-      ) : (
-        <TableFrame frame="none">
-          <Table aria-label={`Hosts of ${role.name}`}>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Host</TableHead>
-                <TableHead>Draft</TableHead>
-                <TableHead aria-label="Actions" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell>
-                    <Link to="/hosts/$hostId" params={{ hostId: row.id }}>
-                      {row.name}
-                    </Link>
-                  </TableCell>
-                  <TableCell>
-                    <DifferenceBadge difference={row.difference} />
-                  </TableCell>
-                  <TableCell>
-                    {row.difference !== 'removed' && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={`Take the role from ${row.name}`}
-                        onClick={() =>
-                          edit.mutate({
-                            op: 'host_role_remove',
-                            host: row.id,
-                            role: role.id,
-                          })
-                        }
-                      >
-                        Take away
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      )}
-      {others.length > 0 && (
-        <form
-          className="row-wrap"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!chosen) return;
-            edit.mutate({ op: 'host_role_add', host: chosen, role: role.id });
-            setChosen('');
-          }}
-        >
-          <Select value={chosen} onValueChange={setChosen}>
-            <SelectTrigger aria-label="Host to give the role to">
-              <SelectValue placeholder="Choose a host" />
-            </SelectTrigger>
-            <SelectContent>
-              {others.map((host) => (
-                <SelectItem key={host.id} value={host.id}>
-                  {host.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button type="submit" disabled={!chosen}>
-            Give to host in draft
+    <Form onSubmit={submit} noValidate>
+      <div className="form-body">
+        <p className="t-caps">Configuration</p>
+        {failure !== null && errorCode(failure) !== 'name_taken' && <ErrorAlert error={failure} thing="role" />}
+        <ol className="form-steps">
+          <li data-done={!nameProblem || undefined}>
+            <p className="t-caps">Role</p>
+            <FormField
+              name="name"
+              label="Name"
+              autoComplete="off"
+              value={name}
+              disabled={role.builtin}
+              hint={role.builtin ? 'The built-in role keeps its name.' : 'Letters, digits, dots, dashes or underscores.'}
+              onChange={(event) => {
+                setName(event.target.value);
+                if (errorCode(failure) === 'name_taken') setFailure(null);
+              }}
+              error={nameProblem}
+            />
+          </li>
+          <li data-done={packages.length > 0 || undefined}>
+            <p className="t-caps">Packages</p>
+            <ItemChips
+              id="role-packages"
+              kind="package"
+              label="Packages"
+              placeholder="jq, brew:jq, pacman:htop…"
+              hint={
+                <>
+                  A package without a prefix goes to the host's package manager: pacman on Linux, Homebrew on macOS.
+                  Prefix it with <code>brew:</code>, <code>brew-cask:</code>, <code>pacman:</code> or <code>aur:</code>{' '}
+                  to pick one. Press a version to change it: <code>latest</code>, a version, or <code>absent</code>.
+                  Press <code>+</code> and type <code>os=linux</code> or <code>os=macos</code> for one OS only.
+                </>
+              }
+              value={packages}
+              onChange={setPackages}
+              suggestions={namesOf(roles.data, role.id, 'package')}
+            />
+          </li>
+          {!role.builtin && (
+            <li data-done={tools.length > 0 || undefined}>
+              <p className="t-caps">mise tools</p>
+              <ItemChips
+                id="role-tools"
+                kind="tool"
+                label="mise tools"
+                placeholder="node, python, npm:prettier…"
+                hint={
+                  <>
+                    Type a mise tool, or pick one that another role uses. Press a version to change it. Press{' '}
+                    <code>+</code> and type <code>os=linux</code> or <code>os=macos</code> for one OS only.
+                  </>
+                }
+                value={tools}
+                onChange={setTools}
+                suggestions={namesOf(roles.data, role.id, 'tool')}
+              />
+            </li>
+          )}
+        </ol>
+      </div>
+      <FormActions sticky tone={dirty ? 'warning' : 'neutral'} message={message}>
+        {dirty && (
+          <Button type="button" size="sm" onClick={discard}>
+            Discard
           </Button>
-        </form>
-      )}
-    </div>
+        )}
+        <Button type="submit" size="sm" variant="primary" disabled={!dirty || !ready}>
+          Save
+        </Button>
+      </FormActions>
+      <SaveRoleDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        role={saved}
+        name={name.trim()}
+        items={items}
+        diff={diff}
+        onSaved={(next) => {
+          setSaved(next);
+          setName(next.name);
+          setPackages(next.items.filter((item) => item.kind === 'package'));
+          setTools(next.items.filter((item) => item.kind === 'tool'));
+          setFailure(null);
+        }}
+        onFailed={setFailure}
+      />
+    </Form>
   );
 }

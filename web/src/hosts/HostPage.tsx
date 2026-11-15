@@ -179,24 +179,32 @@ export function describeEvent(event: HostEvent): string {
       return typeof event.data.from === 'string' && typeof event.data.until === 'string'
         ? `No reports from ${formatDateTime(event.data.from)} to ${formatDateTime(event.data.until)}`
         : 'No reports for a while';
-    case 'change.edited':
-      return 'A draft change edits this host';
+    case 'host.roles_set': {
+      const list = (value: unknown) => (Array.isArray(value) ? value.join(', ') : '');
+      const parts = [
+        list(event.data.added) && `gave ${list(event.data.added)}`,
+        list(event.data.removed) && `took away ${list(event.data.removed)}`,
+      ].filter(Boolean);
+      return `${by(event)} ${parts.join(' and ') || 'edited the roles'}`;
+    }
+    case 'host.items_set':
+      return `${by(event)} edited the adjustments`;
     case 'drift.detected':
-      return 'The host drifted from its approved state';
-    case 'change.approved':
-      return `${by(event)} approved a change for this host`;
+      return 'The host drifted from its desired state';
+    case 'sync.created':
+      return `${by(event)} picked this host for a sync`;
+    case 'sync.approved':
+      return `${by(event)} signed the plan of this host`;
     case 'plan.applied':
-      return 'The agent applied an approved change';
+      return 'The agent applied a signed plan';
     case 'apply.failed':
-      return 'The agent did not apply an approved change';
+      return 'The agent did not apply a signed plan';
     case 'apply.replan':
-      return 'The plan changed before the apply, so the change needs a new approval';
-    case 'drift.reverted':
-      return `${by(event)} opened a change to revert the drift`;
+      return 'The plan changed before the apply, so it needs a new signature';
     case 'drift.adopted':
       return typeof event.data.package === 'string'
-        ? `${by(event)} adopted ${event.data.package} in the draft`
-        : `${by(event)} adopted a package in the draft`;
+        ? `${by(event)} adopted ${event.data.package}`
+        : `${by(event)} adopted a package`;
     case 'drift.ignored':
       return `${by(event)} ignored the drift`;
     default:

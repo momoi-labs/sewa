@@ -51,7 +51,7 @@ export class ApiFailure extends Error {
 }
 
 /** Calls the controller's API with JSON in and out. Throws ApiFailure on any error. */
-export async function api<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+export async function api<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -128,45 +128,21 @@ export function createHost(name: string, os: Os) {
 
 export type ItemKind = 'package' | 'tool';
 
-/** A system package (a mise bootstrap key) or a mise tool, and its version. */
-export type Item = { kind: ItemKind; name: string; version: string };
+/** A system package (a mise bootstrap key) or a mise tool, its version, and
+ *  the one OS that gets it, or null for every OS. */
+export type Item = { kind: ItemKind; name: string; version: string; os?: Os | null };
 
 export type Named = { id: string; name: string };
 
 export type Role = {
   id: string;
   name: string;
+  /** The built-in role: every host has it, and it holds packages only. */
+  builtin: boolean;
   created_at: string;
   items: Item[];
-  /** The items with the draft change applied, or null without a draft. */
-  proposed_items: Item[] | null;
   hosts: Named[];
-  proposed_hosts: Named[] | null;
 };
-
-export type ChangeStatus = 'draft' | 'approved' | 'discarded';
-
-export type Change = {
-  id: string;
-  status: ChangeStatus;
-  created_at: string;
-  created_by: string;
-  closed_at: string | null;
-  edit_count: number;
-  /** The host a revert change applies the approved state on again, or null. */
-  revert_host: Named | null;
-};
-
-export type Edit =
-  | { op: 'role_item_set'; role: string; kind: ItemKind; name: string; version: string }
-  | { op: 'role_item_remove'; role: string; kind: ItemKind; name: string }
-  | { op: 'host_role_add'; host: string; role: string }
-  | { op: 'host_role_remove'; host: string; role: string }
-  | { op: 'host_item_set'; host: string; kind: ItemKind; name: string; version: string }
-  | { op: 'host_item_remove'; host: string; kind: ItemKind; name: string }
-  | { op: 'host_item_reset'; host: string; kind: ItemKind; name: string };
-
-export type EditEntry = { id: number; at: string; by: string; edit: Edit };
 
 /** One resource of a mise bootstrap plan. */
 export type PlanResource = {
@@ -192,34 +168,6 @@ export type Plan = {
   stale: boolean;
 };
 
-export type AffectedHost = {
-  id: string;
-  name: string;
-  status: HostStatus;
-  current_config: string;
-  proposed_config: string | null;
-  plan: Plan | null;
-  /** What the host did with the change's approval, or null before one. */
-  result: HostResult | null;
-};
-
-/** `replan`: the plan changed before the host applied it, so it needs a new approval. */
-export type ResultStatus = 'waiting' | 'applied' | 'failed' | 'replan';
-
-export type HostResult = {
-  status: ResultStatus;
-  plan_hash: string;
-  log: string | null;
-  /** When the agent finished, by its clock. */
-  reported_at: string | null;
-  /** When the controller got the result, if late, as with a plan. */
-  received_at: string | null;
-};
-
-export type ApprovalEntry = { id: string; by: string; passkey: string; created_at: string; host_count: number };
-
-export type ChangeDetail = Change & { edits: EditEntry[]; hosts: AffectedHost[]; approvals: ApprovalEntry[] };
-
 export type Adjustment = { kind: ItemKind; name: string } & (
   | { action: 'set'; version: string }
   | { action: 'remove' }
@@ -227,9 +175,7 @@ export type Adjustment = { kind: ItemKind; name: string } & (
 
 export type HostState = {
   roles: Named[];
-  proposed_roles: Named[] | null;
   adjustments: Adjustment[];
-  proposed_adjustments: Adjustment[] | null;
   items: Item[];
   config: string;
   health: string | null;
@@ -238,8 +184,6 @@ export type HostState = {
         status: 'in_sync' | 'drift' | 'error';
         /** Ignore hid this drift. */
         ignored: boolean;
-        /** The host's open revert change, or null. */
-        revert_change: string | null;
       })
     | null;
   undeclared: {
@@ -252,12 +196,25 @@ export type HostState = {
   } | null;
 };
 
+/** One edit of a host's roles or adjustments. */
+export type HostEdit =
+  | { op: 'host_role_add'; role: string }
+  | { op: 'host_role_remove'; role: string }
+  | { op: 'host_item_set'; kind: ItemKind; name: string; version: string }
+  | { op: 'host_item_remove'; kind: ItemKind; name: string }
+  | { op: 'host_item_reset'; kind: ItemKind; name: string };
+
 export const hostStateQuery = (id: string) =>
   queryOptions({
     queryKey: ['hosts', id, 'state'],
     queryFn: () => api<HostState>('GET', `/api/hosts/${encodeURIComponent(id)}/state`),
     refetchInterval: poll,
   });
+
+/** Changes the host's roles and adjustments at once. The host gets them at its next sync. */
+export function editHost(host: string, edits: HostEdit[]) {
+  return api<HostState>('POST', `/api/hosts/${encodeURIComponent(host)}/edits`, { edits });
+}
 
 export const rolesQuery = queryOptions({
   queryKey: ['roles'],
@@ -269,47 +226,106 @@ export const roleQuery = (id: string) =>
   queryOptions({
     queryKey: ['roles', id],
     queryFn: () => api<Role>('GET', `/api/roles/${encodeURIComponent(id)}`),
-    refetchInterval: poll,
-  });
-
-export const changesQuery = queryOptions({
-  queryKey: ['changes'],
-  queryFn: () => api<Change[]>('GET', '/api/changes'),
-  refetchInterval: poll,
-});
-
-export const changeQuery = (id: string) =>
-  queryOptions({
-    queryKey: ['changes', id],
-    queryFn: () => api<ChangeDetail>('GET', `/api/changes/${encodeURIComponent(id)}`),
-    refetchInterval: poll,
   });
 
 export function createRole(name: string) {
   return api<Role>('POST', '/api/roles', { name });
 }
 
-/** Adds an edit to the draft change, which the controller creates when there is none. */
-export function addEdit(edit: Edit) {
-  return api<Change>('POST', '/api/changes/draft/edits', edit);
-}
-
-export function discardChange(id: string) {
-  return api<Change>('POST', `/api/changes/${encodeURIComponent(id)}/discard`);
-}
-
-export function revertDrift(host: string) {
-  return api<Change>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/revert`);
+/** Replaces the role's name and items. */
+export function saveRole(id: string, name: string, items: Item[]) {
+  return api<Role>('PUT', `/api/roles/${encodeURIComponent(id)}`, { name, items });
 }
 
 /** Adds an undeclared package to a role, or to the host's adjustments when `role` is null. */
 export function adoptPackage(host: string, pkg: string, role: string | null) {
-  return api<Change>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/adopt`, { package: pkg, role });
+  return api<null>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/adopt`, { package: pkg, role });
 }
 
 export function ignoreDrift(host: string) {
   return api<null>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/ignore`);
 }
+
+/** Where a host is in a sync. `replan`: its plan changed before it applied, so it needs a new signature. */
+export type SyncStep = 'picked' | 'in_sync' | 'skipped' | 'waiting' | 'applied' | 'failed' | 'replan';
+
+export type SyncStatus = 'planning' | 'ready' | 'applying' | 'done';
+
+export type HostResult = {
+  plan_hash: string | null;
+  log: string | null;
+  /** When the agent finished, by its clock. */
+  reported_at: string | null;
+  /** When the controller got the result, if late, as with a plan. */
+  received_at: string | null;
+};
+
+export type SyncHost = {
+  id: string;
+  name: string;
+  os: Os;
+  status: HostStatus;
+  last_seen_at: string | null;
+  roles: Named[];
+  step: SyncStep;
+  plan: Plan | null;
+  result: HostResult | null;
+};
+
+export type ApprovalEntry = { id: string; by: string; passkey: string; created_at: string; host_count: number };
+
+export type Sync = {
+  id: string;
+  created_at: string;
+  created_by: string;
+  status: SyncStatus;
+  hosts: SyncHost[];
+  approvals: ApprovalEntry[];
+};
+
+export type SyncEntry = { id: string; created_at: string; created_by: string; status: SyncStatus; host_count: number };
+
+export type EditEntry = {
+  id: number;
+  at: string;
+  kind: string;
+  role: Named | null;
+  host: Named | null;
+  data: Record<string, unknown>;
+};
+
+export type Edits = { since: string | null; edits: EditEntry[] };
+
+export const syncsQuery = queryOptions({
+  queryKey: ['syncs'],
+  queryFn: () => api<SyncEntry[]>('GET', '/api/syncs'),
+  refetchInterval: poll,
+});
+
+export const syncEditsQuery = queryOptions({
+  queryKey: ['syncs', 'edits'],
+  queryFn: () => api<Edits>('GET', '/api/syncs/edits'),
+  refetchInterval: poll,
+});
+
+export const syncQuery = (id: string) =>
+  queryOptions({
+    queryKey: ['syncs', id],
+    queryFn: () => api<Sync>('GET', `/api/syncs/${encodeURIComponent(id)}`),
+    refetchInterval: poll,
+  });
+
+export function createSync(hosts: string[]) {
+  return api<Sync>('POST', '/api/syncs', { hosts });
+}
+
+export type Instance = { address: string };
+
+export const instanceQuery = queryOptions({
+  queryKey: ['instance'],
+  queryFn: () => api<Instance>('GET', '/api/instance'),
+  staleTime: Infinity,
+});
 
 export type Passkey = { id: string; login: string; name: string; credential_id: string; created_at: string };
 
@@ -346,7 +362,7 @@ export function registerPasskey(registration: PasskeyRegistration) {
 
 export type HostPlan = { host_id: string; instance_uid: string; config_hash: string; plan_hash: string };
 
-/** What an approval of a change signs now. */
+/** What a signature of a sync signs now. `change_id` holds the sync id. */
 export type ApprovalOptions = {
   challenge: string;
   rp_id: string;
@@ -363,10 +379,11 @@ export type Assertion = {
   signature: string;
 };
 
-export function approvalOptions(change: string) {
-  return api<ApprovalOptions>('POST', `/api/changes/${encodeURIComponent(change)}/approval`);
+/** What a signature signs now, for every host with changes or only `hosts`. */
+export function syncApprovalOptions(sync: string, hosts?: string[]) {
+  return api<ApprovalOptions>('POST', `/api/syncs/${encodeURIComponent(sync)}/approval`, hosts ? { hosts } : undefined);
 }
 
-export function approveChange(change: string, assertion: Assertion) {
-  return api<Change>('POST', `/api/changes/${encodeURIComponent(change)}/approve`, assertion);
+export function approveSync(sync: string, assertion: Assertion, hosts?: string[]) {
+  return api<Sync>('POST', `/api/syncs/${encodeURIComponent(sync)}/approve`, { ...assertion, hosts: hosts ?? null });
 }

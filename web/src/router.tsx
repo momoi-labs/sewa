@@ -13,11 +13,11 @@ import { NotFound } from './components/NotFound';
 import { Shell } from './components/Shell';
 import { HostPage } from './hosts/HostPage';
 import { HostsPage } from './hosts/HostsPage';
-import { ChangePage } from './desired/ChangePage';
-import { ChangesPage } from './desired/ChangesPage';
 import { RolePage } from './desired/RolePage';
 import { RolesPage } from './desired/RolesPage';
 import { PasskeysPage } from './passkeys/PasskeysPage';
+import { SyncPage } from './sync/SyncPage';
+import { SyncRunPage } from './sync/SyncRunPage';
 
 /** Takes the place of the shell when a page's first load fails with
  *  `not_admin`, a 5xx, or no answer. Retrying loads the page again. */
@@ -52,12 +52,12 @@ const rolesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles'
 
 const roleRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles/$roleId', component: RolePage });
 
-const changesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/changes', component: ChangesPage });
+const syncRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sync', component: SyncPage });
 
-const changeRoute = createRoute({
+const syncRunRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/changes/$changeId',
-  component: ChangePage,
+  path: '/sync/$syncId',
+  component: SyncRunPage,
 });
 
 const passkeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/passkeys', component: PasskeysPage });
@@ -67,8 +67,8 @@ const routeTree = rootRoute.addChildren([
   hostRoute,
   rolesRoute,
   roleRoute,
-  changesRoute,
-  changeRoute,
+  syncRoute,
+  syncRunRoute,
   passkeysRoute,
 ]);
 

@@ -84,7 +84,7 @@ export function summarize(resources: PlanResource[]): string {
 }
 
 /** A mise bootstrap plan as a table: each item, what the host has, what the
- *  config wants, and the action. The agent applies it only once approved. */
+ *  config wants, and the action. The agent applies it only once signed. */
 export function PlanView({ plan, waiting }: { plan: Plan | null; waiting: string }) {
   if (!plan) {
     return (

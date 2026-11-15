@@ -24,18 +24,19 @@ import { type Role, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { AddRoleDialog } from './AddRoleDialog';
-import { compareItems, compareNamed } from './compare';
 
 const COLUMNS = 4;
 
-function drafted(role: Role): boolean {
-  return (
-    compareItems(role.items, role.proposed_items).some((row) => row.difference !== 'same') ||
-    compareNamed(role.hosts, role.proposed_hosts).some((row) => row.difference !== 'same')
-  );
+/** The OS a role's items go to: one OS when every item names it. */
+export function roleOs(role: Role): string {
+  const kinds = new Set(role.items.map((item) => item.os ?? null));
+  if (kinds.size === 1 && kinds.has('linux')) return 'Linux';
+  if (kinds.size === 1 && kinds.has('macos')) return 'macOS';
+  return 'Linux and macOS';
 }
 
-/** Every role, with how many items and hosts it has. */
+/** Every role, the built-in role first, with its OS and how many items and
+ *  hosts it has. */
 export function RolesPage() {
   const roles = useQuery(rolesQuery);
   const [adding, setAdding] = useState(false);
@@ -45,7 +46,6 @@ export function RolesPage() {
       Add a role
     </Button>
   );
-
 
   return (
     <>
@@ -67,10 +67,10 @@ export function RolesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="col-tight">Name</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>OS</TableHead>
                   <TableHead className="num">Items</TableHead>
                   <TableHead className="num">Hosts</TableHead>
-                  <TableHead>Draft</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -79,14 +79,17 @@ export function RolesPage() {
                 ) : (
                   roles.data?.map((role) => (
                     <TableRow key={role.id}>
-                      <TableCell className="col-tight">
-                        <Link to="/roles/$roleId" params={{ roleId: role.id }}>
-                          {role.name}
-                        </Link>
+                      <TableCell>
+                        <div className="row-wrap">
+                          <Link to="/roles/$roleId" params={{ roleId: role.id }}>
+                            {role.name}
+                          </Link>
+                          {role.builtin && <Badge variant="neutral">Built in</Badge>}
+                        </div>
                       </TableCell>
+                      <TableCell>{roleOs(role)}</TableCell>
                       <TableCell className="num">{role.items.length}</TableCell>
-                      <TableCell className="num">{role.hosts.length}</TableCell>
-                      <TableCell>{drafted(role) ? <Badge variant="warning">Edited in draft</Badge> : null}</TableCell>
+                      <TableCell className="num">{role.builtin ? 'All' : role.hosts.length}</TableCell>
                     </TableRow>
                   ))
                 )}

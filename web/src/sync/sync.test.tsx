@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalOptions, ChangeDetail, Host, HostState, Passkey } from '../api';
+import type { ApprovalOptions, Host, HostState, Passkey, Sync, SyncHost } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { decode, encode } from '../webauthn';
 
@@ -28,28 +28,27 @@ const plan = {
   stale: false,
 };
 
-function affected(id: string, name: string, result: ChangeDetail['hosts'][number]['result']) {
+function picked(id: string, name: string, extra: Partial<SyncHost> = {}): SyncHost {
   return {
     id,
     name,
-    status: 'connected' as const,
-    current_config: '',
-    proposed_config: null,
+    os: 'linux',
+    status: 'connected',
+    last_seen_at: plan.reported_at,
+    roles: [],
+    step: 'picked',
     plan,
-    result,
+    result: null,
+    ...extra,
   };
 }
 
-const draft: ChangeDetail = {
+const ready: Sync = {
   id: '44444444-4444-4444-8444-444444444444',
-  status: 'draft',
   created_at: '2026-01-02T10:00:00Z',
   created_by: 'admin',
-  closed_at: null,
-  edit_count: 1,
-  revert_host: null,
-  edits: [],
-  hosts: [affected(host.id, host.name, null)],
+  status: 'ready',
+  hosts: [picked(host.id, host.name)],
   approvals: [],
 };
 
@@ -58,7 +57,7 @@ const options: ApprovalOptions = {
   rp_id: 'controller.example',
   allow_credentials: [encode(new Uint8Array([9]))],
   signed_text: 'sewa approval v1\n',
-  change_id: draft.id,
+  change_id: ready.id,
   hosts: [{ host_id: host.id, instance_uid: 'u', config_hash: 'c1', plan_hash: 'p1aaaaaaaaaaaaaaaa' }],
 };
 
@@ -94,22 +93,39 @@ function authenticator() {
   return { get, create };
 }
 
-describe('approve', () => {
+describe('sync', () => {
+  it('starts a sync of the picked hosts', async () => {
+    const user = userEvent.setup();
+    const calls = mockApi({
+      'GET /api/hosts': {
+        status: 200,
+        body: [host, { ...host, id: '22222222-2222-4222-8222-222222222222', name: 'build-2', os: 'macos' }],
+      },
+      'GET /api/syncs': { status: 200, body: [] },
+      'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
+      'POST /api/syncs': { status: 201, body: ready },
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: ready },
+    });
+    renderRoute('/sync');
+    await user.click(await screen.findByRole('button', { name: 'All Linux' }));
+    await user.click(screen.getByRole('button', { name: 'Plan 1 host' }));
+    await waitFor(() => expect(calls.find((call) => call.method === 'POST')?.body).toEqual({ hosts: [host.id] }));
+    expect(await screen.findByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
+  });
+
   it('signs the plans with a passkey and sends the assertion', async () => {
     const user = userEvent.setup();
     const { get } = authenticator();
     const calls = mockApi({
-      [`GET /api/changes/${draft.id}`]: { status: 200, body: draft },
-      [`POST /api/changes/${draft.id}/approval`]: { status: 200, body: options },
-      [`POST /api/changes/${draft.id}/approve`]: { status: 200, body: { ...draft, status: 'approved' } },
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: ready },
+      [`POST /api/syncs/${ready.id}/approval`]: { status: 200, body: options },
+      [`POST /api/syncs/${ready.id}/approve`]: {
+        status: 200,
+        body: { ...ready, status: 'applying', hosts: [picked(host.id, host.name, { step: 'waiting' })] },
+      },
     });
-    renderRoute(`/changes/${draft.id}`);
-    await user.click(await screen.findByRole('button', { name: 'Approve' }));
-    const dialog = await screen.findByRole('dialog');
-    const row = (await within(dialog).findByText('build-1')).closest('tr')!;
-    expect(within(row).getByText('p1aaaaaaaaaa')).toBeInTheDocument();
-    expect(calls.some((call) => call.path.endsWith('/approve'))).toBe(false);
-    await user.click(within(dialog).getByRole('button', { name: 'Approve with passkey' }));
+    renderRoute(`/sync/${ready.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Sign and sync' }));
     await waitFor(() => expect(calls.some((call) => call.path.endsWith('/approve'))).toBe(true));
     const request = get.mock.calls[0] as unknown as [CredentialRequestOptions];
     expect(request[0].publicKey!.rpId).toBe('controller.example');
@@ -119,6 +135,7 @@ describe('approve', () => {
       authenticator_data: encode(new Uint8Array([4])),
       client_data_json: encode(new Uint8Array([5])),
       signature: encode(new Uint8Array([6])),
+      hosts: null,
     });
   });
 
@@ -126,76 +143,74 @@ describe('approve', () => {
     const user = userEvent.setup();
     authenticator();
     mockApi({
-      [`GET /api/changes/${draft.id}`]: { status: 200, body: draft },
-      [`POST /api/changes/${draft.id}/approval`]: { status: 409, body: { error: 'no_passkey' } },
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: ready },
+      [`POST /api/syncs/${ready.id}/approval`]: { status: 409, body: { error: 'no_passkey' } },
     });
-    renderRoute(`/changes/${draft.id}`);
-    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    renderRoute(`/sync/${ready.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Sign and sync' }));
     expect(await screen.findByText('You have no passkey')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve with passkey' })).toBeDisabled();
   });
 
-  it('shows each host result and a summary', async () => {
-    const approved: ChangeDetail = {
-      ...draft,
-      status: 'approved',
+  it('shows a failed host with its log and retries only that host', async () => {
+    const user = userEvent.setup();
+    authenticator();
+    const result = { plan_hash: 'p1', reported_at: plan.reported_at, received_at: null };
+    const done: Sync = {
+      ...ready,
+      status: 'done',
       hosts: [
-        affected(host.id, 'build-1', {
-          status: 'applied',
-          plan_hash: 'p1',
-          log: 'done',
-          reported_at: plan.reported_at,
-          received_at: '2026-01-02T11:30:00Z',
+        picked(host.id, 'build-1', { step: 'applied', result: { ...result, log: 'done' } }),
+        picked('22222222-2222-4222-8222-222222222222', 'build-2', {
+          step: 'failed',
+          result: { ...result, log: 'error: target not found: jq' },
         }),
-        affected('22222222-2222-4222-8222-222222222222', 'build-2', {
-          status: 'failed',
-          plan_hash: 'p1',
-          log: 'error: target not found: jq',
-          reported_at: plan.reported_at,
-          received_at: null,
-        }),
-        affected('33333333-3333-4333-8333-333333333333', 'build-3', {
-          status: 'replan',
-          plan_hash: 'p1',
-          log: 'the plan changed',
-          reported_at: plan.reported_at,
-          received_at: null,
-        }),
-        affected('55555555-5555-4555-8555-555555555555', 'build-4', {
-          status: 'waiting',
-          plan_hash: 'p1',
-          log: null,
-          reported_at: null,
-          received_at: null,
-        }),
+        picked('33333333-3333-4333-8333-333333333333', 'build-3', { step: 'skipped', status: 'disconnected' }),
       ],
-      approvals: [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: plan.reported_at, host_count: 4 }],
+      approvals: [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: plan.reported_at, host_count: 2 }],
     };
-    mockApi({ [`GET /api/changes/${draft.id}`]: { status: 200, body: approved } });
-    renderRoute(`/changes/${draft.id}`);
-    expect(
-      await screen.findByText('Applied on 1 of 4 hosts, 1 failed, 1 need re-approval, 1 waiting.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Applied')).toBeInTheDocument();
-    // The agent kept this result while it could not reach the controller.
-    expect(screen.getByText(/applied the plan.*kept by the agent while offline/)).toBeInTheDocument();
-    expect(screen.getByText('Failed')).toBeInTheDocument();
-    expect(screen.getByText('Needs re-approval')).toBeInTheDocument();
+    const calls = mockApi({
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: done },
+      [`POST /api/syncs/${ready.id}/approval`]: { status: 200, body: options },
+      [`POST /api/syncs/${ready.id}/approve`]: { status: 200, body: done },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText(/Sync finished with failures/)).toBeInTheDocument();
+    expect(screen.getByText('1 host applied, 1 failed, 1 skipped.', { exact: false })).toBeInTheDocument();
     expect(screen.getByText('error: target not found: jq')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve again' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry build-2' }));
+    await waitFor(() =>
+      expect(calls.find((call) => call.path.endsWith('/approval'))?.body).toEqual({
+        hosts: ['22222222-2222-4222-8222-222222222222'],
+      }),
+    );
+    await waitFor(() =>
+      expect(calls.find((call) => call.path.endsWith('/approve'))?.body).toMatchObject({
+        hosts: ['22222222-2222-4222-8222-222222222222'],
+      }),
+    );
+  });
+
+  it('says when there is nothing to sync', async () => {
+    const inSync = { ...plan, exit_code: 0, plan: { resources: [] } };
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: { ...ready, status: 'done', hosts: [picked(host.id, host.name, { plan: inSync })] },
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText('Nothing to sync')).toBeInTheDocument();
   });
 });
 
 describe('drift actions', () => {
   const state: HostState = {
     roles: [],
-    proposed_roles: null,
     adjustments: [],
-    proposed_adjustments: null,
     items: [],
     config: '',
     health: 'drift',
-    drift: { ...plan, status: 'drift', ignored: false, revert_change: null },
+    drift: { ...plan, status: 'drift', ignored: false },
     undeclared: { manager: 'pacman', packages: ['sl'], ignored_count: 0, explicit_count: 3, reported_at: plan.reported_at },
   };
 
@@ -210,27 +225,29 @@ describe('drift actions', () => {
     return calls;
   }
 
-  it('reverts the drift by opening a change', async () => {
+  it('reverts the drift with a sync of this host', async () => {
     const user = userEvent.setup();
     const calls = renderDrift({
-      [`POST /api/hosts/${host.id}/drift/revert`]: { status: 201, body: { ...draft, revert_host: host } },
-      [`GET /api/changes/${draft.id}`]: { status: 200, body: { ...draft, revert_host: { id: host.id, name: host.name } } },
+      'POST /api/syncs': { status: 201, body: ready },
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: ready },
     });
     await user.click(await screen.findByRole('tab', { name: 'Drift' }));
     await user.click(await screen.findByRole('button', { name: 'Revert' }));
-    expect(await screen.findByRole('heading', { name: 'Revert of build-1' })).toBeInTheDocument();
-    expect(calls.some((call) => call.path === `/api/hosts/${host.id}/drift/revert`)).toBe(true);
+    expect(await screen.findByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
+    expect(calls.find((call) => call.path === '/api/syncs' && call.method === 'POST')?.body).toEqual({
+      hosts: [host.id],
+    });
   });
 
   it('adopts an undeclared package on this host', async () => {
     const user = userEvent.setup();
     const calls = renderDrift({
-      [`POST /api/hosts/${host.id}/drift/adopt`]: { status: 201, body: draft },
+      [`POST /api/hosts/${host.id}/drift/adopt`]: { status: 204 },
     });
     await user.click(await screen.findByRole('tab', { name: 'Drift' }));
     await user.click(await screen.findByRole('button', { name: 'Adopt sl' }));
     const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'Add to draft' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Adopt' }));
     await waitFor(() =>
       expect(calls.find((call) => call.path.endsWith('/drift/adopt'))?.body).toEqual({ package: 'sl', role: null }),
     );
