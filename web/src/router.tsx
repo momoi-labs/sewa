@@ -1,11 +1,14 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { useQueryErrorResetBoundary } from '@tanstack/react-query';
 import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  type ErrorComponentProps,
   type RouterHistory,
 } from '@tanstack/react-router';
 
+import { ErrorPage } from './components/ErrorPage';
 import { NotFound } from './components/NotFound';
 import { Shell } from './components/Shell';
 import { HostPage } from './hosts/HostPage';
@@ -16,8 +19,24 @@ import { RolePage } from './desired/RolePage';
 import { RolesPage } from './desired/RolesPage';
 import { PasskeysPage } from './passkeys/PasskeysPage';
 
+/** Takes the place of the shell when a page's first load fails with
+ *  `not_admin`, a 5xx, or no answer. Retrying loads the page again. */
+function RootError({ error, reset }: ErrorComponentProps) {
+  const queryReset = useQueryErrorResetBoundary();
+  return (
+    <ErrorPage
+      error={error}
+      onRetry={() => {
+        queryReset.reset();
+        reset();
+      }}
+    />
+  );
+}
+
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
+  errorComponent: RootError,
   notFoundComponent: NotFound,
 });
 

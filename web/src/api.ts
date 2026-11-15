@@ -71,24 +71,55 @@ export async function api<T>(method: 'GET' | 'POST', path: string, body?: unknow
   return data as T;
 }
 
+/** True when a failed load should take the whole page: the person is not an
+ *  admin, the controller failed, or it did not answer. */
+export function isPageError(error: unknown): boolean {
+  if (!(error instanceof ApiFailure)) return true;
+  return error.code === 'not_admin' || error.code === 'network' || error.status >= 500;
+}
+
+/** A 403 does not change by itself, so it is neither retried nor polled again. */
+function isForbidden(error: unknown): boolean {
+  return error instanceof ApiFailure && error.status === 403;
+}
+
+/** React Query's default retry (3 times), except for a 403. */
+export function retryQuery(failureCount: number, error: unknown): boolean {
+  return !isForbidden(error) && failureCount < 3;
+}
+
+function poll(query: { state: { error: unknown } }): number | false {
+  return isForbidden(query.state.error) ? false : POLL_MS;
+}
+
+/** Query defaults. A failed first load that takes the page goes to the root
+ *  error boundary; a failed refresh of data already on screen does not. */
+export const queryDefaults = {
+  queries: {
+    retry: retryQuery,
+    throwOnError: (error: unknown, query: { state: { data: unknown } }) =>
+      query.state.data === undefined && isPageError(error),
+  },
+};
+
 export const hostsQuery = queryOptions({
   queryKey: ['hosts'],
   queryFn: () => api<Host[]>('GET', '/api/hosts'),
-  refetchInterval: POLL_MS,
+  refetchInterval: poll,
 });
 
 export const hostQuery = (id: string) =>
   queryOptions({
     queryKey: ['hosts', id],
     queryFn: () => api<Host>('GET', `/api/hosts/${encodeURIComponent(id)}`),
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
 export const eventsQuery = (id: string) =>
   queryOptions({
     queryKey: ['hosts', id, 'events'],
     queryFn: () => api<HostEvent[]>('GET', `/api/hosts/${encodeURIComponent(id)}/events`),
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
 export function createHost(name: string, os: Os) {
@@ -225,33 +256,33 @@ export const hostStateQuery = (id: string) =>
   queryOptions({
     queryKey: ['hosts', id, 'state'],
     queryFn: () => api<HostState>('GET', `/api/hosts/${encodeURIComponent(id)}/state`),
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
 export const rolesQuery = queryOptions({
   queryKey: ['roles'],
   queryFn: () => api<Role[]>('GET', '/api/roles'),
-  refetchInterval: POLL_MS,
+  refetchInterval: poll,
 });
 
 export const roleQuery = (id: string) =>
   queryOptions({
     queryKey: ['roles', id],
     queryFn: () => api<Role>('GET', `/api/roles/${encodeURIComponent(id)}`),
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
 export const changesQuery = queryOptions({
   queryKey: ['changes'],
   queryFn: () => api<Change[]>('GET', '/api/changes'),
-  refetchInterval: POLL_MS,
+  refetchInterval: poll,
 });
 
 export const changeQuery = (id: string) =>
   queryOptions({
     queryKey: ['changes', id],
     queryFn: () => api<ChangeDetail>('GET', `/api/changes/${encodeURIComponent(id)}`),
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
 export function createRole(name: string) {

@@ -47,7 +47,6 @@ import { useState } from 'react';
 
 import { type AffectedHost, type ChangeDetail, changeQuery, discardChange, hostsQuery, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
-import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { formatDateTime, formatReceived } from '../format';
 import { HostStatusBadge } from '../hosts/HostStatusBadge';
 import { ApplyResultBadge, applySummary } from './ApplyResult';
@@ -77,9 +76,6 @@ export function ChangePage() {
     ((change.data.status === 'draft' && change.data.hosts.length > 0) ||
       (change.data.status === 'approved' && replan));
 
-  if (change.isError && !change.data && isPageError(change.error)) {
-    return <ErrorPage error={change.error} onRetry={() => void change.refetch()} />;
-  }
 
   return (
     <>

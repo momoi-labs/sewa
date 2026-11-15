@@ -22,7 +22,6 @@ import { useState } from 'react';
 
 import { type Role, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
-import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { AddRoleDialog } from './AddRoleDialog';
 import { compareItems, compareNamed } from './compare';
@@ -47,9 +46,6 @@ export function RolesPage() {
     </Button>
   );
 
-  if (roles.isError && !roles.data && isPageError(roles.error)) {
-    return <ErrorPage error={roles.error} onRetry={() => void roles.refetch()} />;
-  }
 
   return (
     <>

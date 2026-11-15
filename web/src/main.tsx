@@ -7,9 +7,10 @@ import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { queryDefaults } from './api';
 import { createAppRouter } from './router';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({ defaultOptions: queryDefaults });
 const router = createAppRouter(queryClient);
 
 const root = document.getElementById('root');

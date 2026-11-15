@@ -4,15 +4,9 @@ import { useId } from 'react';
 import { ApiFailure } from '../api';
 import './ErrorPage.css';
 
-/** True when a failed load should take the whole page: the person is not an
- *  admin, the controller failed, or it did not answer. */
-export function isPageError(error: unknown): boolean {
-  if (!(error instanceof ApiFailure)) return true;
-  return error.code === 'not_admin' || error.code === 'network' || error.status >= 500;
-}
-
-/** The page for a load that failed with `not_admin`, a 5xx, or no answer:
- *  a brand illustration, the status code, what happened, and one action. */
+/** The full page for a load that failed with `not_admin`, a 5xx, or no answer:
+ *  a brand illustration, the status code, what happened, and one action. It
+ *  has no shell around it. */
 export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const titleId = useId();
   const status = error instanceof ApiFailure ? error.status : 500;
@@ -37,20 +31,22 @@ export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => v
         };
 
   return (
-    <EmptyState
-      variant="informational"
-      className="error-page"
-      role={denied ? 'region' : 'alert'}
-      aria-labelledby={titleId}
-    >
-      <img className="error-page-art" src={`/${art}.svg`} alt="" />
-      <img className="error-page-art error-page-art-dark" src={`/${art}-dark.svg`} alt="" />
-      <p className="mono">{status === 0 ? 'No answer' : `Error ${status}`}</p>
-      <EmptyStateTitle id={titleId}>{page.title}</EmptyStateTitle>
-      <EmptyStateDescription>{page.body}</EmptyStateDescription>
-      <EmptyStateActions>
-        <Button onClick={onRetry}>{page.action}</Button>
-      </EmptyStateActions>
-    </EmptyState>
+    <main className="error-page-screen">
+      <EmptyState
+        variant="informational"
+        className="error-page"
+        role={denied ? 'region' : 'alert'}
+        aria-labelledby={titleId}
+      >
+        <img className="error-page-art" src={`/${art}.svg`} alt="" />
+        <img className="error-page-art error-page-art-dark" src={`/${art}-dark.svg`} alt="" />
+        <p className="mono">{status === 0 ? 'No answer' : `Error ${status}`}</p>
+        <EmptyStateTitle id={titleId}>{page.title}</EmptyStateTitle>
+        <EmptyStateDescription>{page.body}</EmptyStateDescription>
+        <EmptyStateActions>
+          <Button onClick={onRetry}>{page.action}</Button>
+        </EmptyStateActions>
+      </EmptyState>
+    </main>
   );
 }
