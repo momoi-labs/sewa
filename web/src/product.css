@@ -1,6 +1,46 @@
 /* Product CSS for sewa. Kiso classes come first; this file only sizes what
    Kiso leaves to the product. */
 
-/* A host's apply log on the change page. LogView takes its height from the
+/* A host's apply log on the sync page. LogView takes its height from the
    product; this shows about a dozen lines and scrolls the rest. */
-.apply-log { block-size: calc(var(--spacing-4xl) * 5); }
+.apply-log { max-block-size: calc(var(--spacing-4xl) * 5); }
+
+/* Header C: the brand slot is tinted with the accent surface and shows the
+   instance address under the name. On a phone the drawer shows it. */
+.sidebar-header { background: var(--color-accent-surface); }
+.brand-slot { gap: var(--spacing-sm); color: var(--color-foreground); text-decoration: none; }
+.brand-slot .sewa-mark { height: var(--size-control-lg); }
+.brand-slot-text { min-width: 0; line-height: 1.15; display: grid; }
+.brand-slot-name { font-size: var(--type-size-h3); font-weight: var(--type-weight-bold); }
+.brand-slot-site {
+  font-family: var(--font-mono); font-size: var(--type-size-metadata); color: var(--color-muted-foreground);
+  text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+}
+
+/* Numbered steps of a configuration form, as in the role page. The number
+   hangs in the gutter the fields are indented by, on the title's line. A
+   step whose fields are complete shows a check. */
+.form-steps { max-width: 760px; counter-reset: form-step; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-lg); }
+.form-steps > li { display: grid; gap: var(--spacing-md); padding-inline-start: calc(1.5rem + var(--spacing-sm)); }
+.form-steps > li + li { border-block-start: 1px solid var(--color-border); padding-block-start: var(--spacing-lg); }
+.form-steps > li > .t-caps {
+  counter-increment: form-step; margin: 0;
+  margin-inline-start: calc(-1.5rem - var(--spacing-sm));
+  display: flex; align-items: center; gap: var(--spacing-sm);
+}
+.form-steps > li > .t-caps::before {
+  content: counter(form-step);
+  flex: none; display: grid; place-items: center;
+  width: 1.5rem; height: 1.5rem; border-radius: var(--radius-full);
+  background: var(--color-secondary); color: var(--color-secondary-foreground);
+  font-size: var(--type-size-label); font-weight: var(--type-weight-medium);
+}
+.form-steps > li[data-done] > .t-caps::before {
+  content: "✓";
+  background: var(--color-primary); color: var(--color-primary-foreground);
+}
+
+/* The host picker of a new sync: one row per host, the name first. */
+.host-picker { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-xs); }
+.host-picker-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; cursor: pointer; }
+.host-picker-name { font-weight: var(--type-weight-medium); min-width: 8rem; }

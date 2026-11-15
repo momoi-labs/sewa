@@ -22,7 +22,7 @@ const messages: Record<string, { title: string; body: string }> = {
   },
   invalid_item: {
     title: 'The item was not saved',
-    body: 'Its name or version is empty, too long, or has spaces at either end, or a tool was set to absent. Fix it, then try again.',
+    body: 'Its name or version is empty, too long, or has spaces, or a mise tool was set to absent. Fix it, then try again.',
   },
   unknown_role: {
     title: 'The role no longer exists',
@@ -32,13 +32,41 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'The host no longer exists',
     body: 'Reload the page and pick another host.',
   },
-  not_draft: {
-    title: 'The change is closed',
-    body: 'Someone discarded this change already. Reload the page to see it.',
-  },
   invalid_name: {
     title: 'The name was not saved',
-    body: 'Give the passkey a name of 1 to 64 characters, then try again.',
+    body: 'The name is empty, too long, or has characters the controller does not take. Fix it, then try again.',
+  },
+  name_taken: {
+    title: 'The name is taken',
+    body: 'Another role has this name. Choose another, then save again.',
+  },
+  duplicate_item: {
+    title: 'An item is listed twice',
+    body: 'Each package and each mise tool can be in a role once. Remove the copy, then save again.',
+  },
+  too_many_items: {
+    title: 'The role has too many items',
+    body: 'Split the items into two roles, then save again.',
+  },
+  bootstrap_packages_only: {
+    title: 'The built-in role holds packages only',
+    body: 'Put mise tools in another role.',
+  },
+  builtin_role: {
+    title: 'The built-in role cannot change this way',
+    body: 'Every host has the built-in role, and it keeps its name. Edit its packages on its role page.',
+  },
+  invalid_edit: {
+    title: 'The edit was not saved',
+    body: 'The controller could not read it. Reload the page, then try again.',
+  },
+  too_many_edits: {
+    title: 'Too many edits at once',
+    body: 'Save fewer edits at a time.',
+  },
+  no_hosts: {
+    title: 'No host is picked',
+    body: 'Pick at least one host, then start the sync.',
   },
   unsupported_algorithm: {
     title: 'This passkey type is not supported',
@@ -64,21 +92,13 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'You have no passkey',
     body: 'Add a passkey on the Passkeys page, then run the install script on each host again so its agent trusts it.',
   },
-  not_approvable: {
-    title: 'This change cannot be approved',
-    body: 'It was discarded, or every host has its approval already. Reload the page to see it.',
-  },
   nothing_to_approve: {
-    title: 'No host needs this change',
-    body: 'The change does not alter the config of any host. Edit a role or a host first.',
-  },
-  plans_not_ready: {
-    title: 'Some hosts have not planned the change',
-    body: 'Wait until each affected host shows its plan, then approve.',
+    title: 'Nothing to sign',
+    body: 'No host in this sync has a plan with changes. Reload the page to see where each host is.',
   },
   plans_changed: {
-    title: 'A plan changed while you approved',
-    body: 'Check the new plans, then approve again.',
+    title: 'A plan changed while you signed',
+    body: 'Check the new plans, then sign again.',
   },
   invalid_assertion: {
     title: 'The controller refused the signature',
@@ -95,7 +115,7 @@ export function errorCode(error: unknown): string {
 }
 
 /** An error Alert for a failed API call, with an optional retry. `thing`
- *  names what a 404 did not find: a host, a role, or a change. */
+ *  names what a 404 did not find: a host, a role, or a sync. */
 export function ErrorAlert({
   error,
   onRetry,

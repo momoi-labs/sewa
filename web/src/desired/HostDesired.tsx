@@ -1,4 +1,5 @@
 import {
+  Badge,
   Button,
   EmptyState,
   EmptyStateDescription,
@@ -27,56 +28,47 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 
-import {
-  type Adjustment,
-  type Host,
-  type HostState,
-  ignoreDrift,
-  type Item,
-  revertDrift,
-  rolesQuery,
-} from '../api';
+import { createSync, editHost, type Host, type HostEdit, type HostState, ignoreDrift, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { Unknown } from '../components/Unknown';
 import { formatDateTime } from '../format';
 import { AdoptDialog } from './AdoptDialog';
-import { compareItems, compareNamed } from './compare';
-import { DifferenceBadge } from './DifferenceBadge';
-import { DraftNotice } from './DraftNotice';
 import { ItemForm } from './ItemForm';
-import { ItemsTable } from './ItemsTable';
+import { kindNames } from './items';
 import { PlanView } from './PlanView';
-import { useEdit } from './useEdit';
 
-const kinds = { package: 'Package', tool: 'mise tool' } as const;
-
-/** An adjustment as an item, with "left out" as the version of a removal. */
-function asItem(adjustment: Adjustment): Item {
-  return {
-    kind: adjustment.kind,
-    name: adjustment.name,
-    version: adjustment.action === 'set' ? adjustment.version : 'left out',
-  };
+/** Edits the host's roles and adjustments. They change its desired state
+ *  only: the host gets them at its next sync. */
+function useHostEdit(host: Host) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: (edit: HostEdit) => editHost(host.id, [edit]),
+    onSuccess: async (state) => {
+      queryClient.setQueryData(['hosts', host.id, 'state'], state);
+      await Promise.all([['roles'], ['syncs']].map((queryKey) => queryClient.invalidateQueries({ queryKey })));
+      toast('success', `${host.name} saved`, 'Sync the host to apply it.');
+    },
+  });
 }
 
-/** The host's roles, its adjustments, and the items they add up to. Every
- *  edit goes into the draft change. */
+/** The host's roles, its adjustments, and the items they add up to. Each
+ *  edit saves at once and applies at the next sync. */
 export function HostDesired({ host, state }: { host: Host; state: HostState }) {
-  const edit = useEdit();
+  const edit = useHostEdit(host);
   const roles = useQuery(rolesQuery);
   const [chosen, setChosen] = useState('');
-  const roleRows = compareNamed(state.roles, state.proposed_roles);
-  const have = new Set(roleRows.filter((row) => row.difference !== 'removed').map((row) => row.id));
-  const others = (roles.data ?? []).filter((role) => !have.has(role.id));
-  const adjustmentRows = compareItems(state.adjustments.map(asItem), state.proposed_adjustments?.map(asItem) ?? null);
+  const builtin = new Set((roles.data ?? []).filter((role) => role.builtin).map((role) => role.id));
+  const have = new Set(state.roles.map((role) => role.id));
+  const others = (roles.data ?? []).filter((role) => !have.has(role.id) && !role.builtin);
 
   return (
     <div className="stack">
-      <DraftNotice />
+      <p className="muted">Edits save at once. The host gets them at its next sync.</p>
       {edit.isError && <ErrorAlert error={edit.error} />}
 
       <h3 className="t-h3">Roles</h3>
-      {roleRows.length === 0 ? (
+      {state.roles.length === 0 ? (
         <p className="muted">This host has no roles.</p>
       ) : (
         <TableFrame frame="none">
@@ -84,34 +76,28 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Role</TableHead>
-                <TableHead>Draft</TableHead>
                 <TableHead aria-label="Actions" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {roleRows.map((row) => (
-                <TableRow key={row.id}>
+              {state.roles.map((role) => (
+                <TableRow key={role.id}>
                   <TableCell>
-                    <Link to="/roles/$roleId" params={{ roleId: row.id }}>
-                      {row.name}
-                    </Link>
+                    <div className="row-wrap">
+                      <Link to="/roles/$roleId" params={{ roleId: role.id }}>
+                        {role.name}
+                      </Link>
+                      {builtin.has(role.id) && <Badge variant="neutral">Built in</Badge>}
+                    </div>
                   </TableCell>
                   <TableCell>
-                    <DifferenceBadge difference={row.difference} />
-                  </TableCell>
-                  <TableCell>
-                    {row.difference !== 'removed' && (
+                    {!builtin.has(role.id) && (
                       <Button
                         size="sm"
                         variant="ghost"
-                        aria-label={`Take away ${row.name}`}
-                        onClick={() =>
-                          edit.mutate({
-                            op: 'host_role_remove',
-                            host: host.id,
-                            role: row.id,
-                          })
-                        }
+                        aria-label={`Take away ${role.name}`}
+                        disabled={edit.isPending}
+                        onClick={() => edit.mutate({ op: 'host_role_remove', role: role.id })}
                       >
                         Take away
                       </Button>
@@ -129,7 +115,7 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
           onSubmit={(event) => {
             event.preventDefault();
             if (!chosen) return;
-            edit.mutate({ op: 'host_role_add', host: host.id, role: chosen });
+            edit.mutate({ op: 'host_role_add', role: chosen });
             setChosen('');
           }}
         >
@@ -145,8 +131,8 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
               ))}
             </SelectContent>
           </Select>
-          <Button type="submit" disabled={!chosen}>
-            Give role in draft
+          <Button type="submit" disabled={!chosen || edit.isPending}>
+            Give role
           </Button>
         </form>
       )}
@@ -155,32 +141,52 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
       <p className="muted">
         An adjustment adds an item to this host, changes its version, or leaves out an item of a role.
       </p>
-      {adjustmentRows.length > 0 && (
-        <ItemsTable
-          rows={adjustmentRows}
-          label={`Adjustments of ${host.name}`}
-          removeLabel="Reset"
-          onRemove={(row) =>
-            edit.mutate({
-              op: 'host_item_reset',
-              host: host.id,
-              kind: row.kind,
-              name: row.name,
-            })
-          }
-        />
+      {state.adjustments.length > 0 && (
+        <TableFrame frame="none">
+          <Table aria-label={`Adjustments of ${host.name}`}>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Item</TableHead>
+                <TableHead>Kind</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead aria-label="Actions" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {state.adjustments.map((adjustment) => (
+                <TableRow key={`${adjustment.kind}:${adjustment.name}`}>
+                  <TableCell className="mono">{adjustment.name}</TableCell>
+                  <TableCell>{kindNames[adjustment.kind]}</TableCell>
+                  <TableCell className="mono">
+                    {adjustment.action === 'set' ? adjustment.version : <span className="muted">left out</span>}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Reset ${adjustment.name}`}
+                      disabled={edit.isPending}
+                      onClick={() =>
+                        edit.mutate({ op: 'host_item_reset', kind: adjustment.kind, name: adjustment.name })
+                      }
+                    >
+                      Reset
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableFrame>
       )}
-      <ItemForm
-        submitLabel="Add to draft"
-        onAdd={(item) => edit.mutateAsync({ op: 'host_item_set', host: host.id, ...item })}
-      />
+      <ItemForm submitLabel="Add" onAdd={(item) => edit.mutateAsync({ op: 'host_item_set', ...item })} />
 
-      <h3 className="t-h3">Approved items</h3>
+      <h3 className="t-h3">Desired items</h3>
       {state.items.length === 0 ? (
-        <p className="muted">No items are approved for this host.</p>
+        <p className="muted">This host has no desired items.</p>
       ) : (
         <TableFrame frame="none">
-          <Table aria-label={`Approved items of ${host.name}`}>
+          <Table aria-label={`Desired items of ${host.name}`}>
             <TableHeader>
               <TableRow>
                 <TableHead>Item</TableHead>
@@ -193,21 +199,15 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
               {state.items.map((item) => (
                 <TableRow key={`${item.kind}:${item.name}`}>
                   <TableCell className="mono">{item.name}</TableCell>
-                  <TableCell>{kinds[item.kind]}</TableCell>
+                  <TableCell>{kindNames[item.kind]}</TableCell>
                   <TableCell className="mono">{item.version}</TableCell>
                   <TableCell>
                     <Button
                       size="sm"
                       variant="ghost"
                       aria-label={`Leave out ${item.name}`}
-                      onClick={() =>
-                        edit.mutate({
-                          op: 'host_item_remove',
-                          host: host.id,
-                          kind: item.kind,
-                          name: item.name,
-                        })
-                      }
+                      disabled={edit.isPending}
+                      onClick={() => edit.mutate({ op: 'host_item_remove', kind: item.kind, name: item.name })}
                     >
                       Leave out
                     </Button>
@@ -228,7 +228,7 @@ const health: Record<string, { tone: StatusTone; label: string }> = {
   error: { tone: 'danger', label: 'Plan failed' },
 };
 
-/** Whether the host matches its approved state, the plan that would fix
+/** Whether the host matches its desired state, the plan that would fix
  *  it, and the packages installed outside any role. Revert, Adopt and
  *  Ignore act on the drift. */
 export function HostDrift({ host, state }: { host: Host; state: HostState }) {
@@ -240,10 +240,11 @@ export function HostDrift({ host, state }: { host: Host; state: HostState }) {
   const status = drift ? health[drift.status] : null;
   const undeclared = state.undeclared;
   const revert = useMutation({
-    mutationFn: () => revertDrift(host.id),
-    onSuccess: async (change) => {
-      await queryClient.invalidateQueries({ queryKey: ['changes'] });
-      await navigate({ to: '/changes/$changeId', params: { changeId: change.id } });
+    mutationFn: () => createSync([host.id]),
+    onSuccess: async (sync) => {
+      queryClient.setQueryData(['syncs', sync.id], sync);
+      await queryClient.invalidateQueries({ queryKey: ['syncs'] });
+      await navigate({ to: '/sync/$syncId', params: { syncId: sync.id } });
     },
   });
   const ignore = useMutation({
@@ -268,7 +269,7 @@ export function HostDrift({ host, state }: { host: Host; state: HostState }) {
               </StatusBadge>
             </div>
           ) : (
-            <Unknown reason="The agent has not planned the approved state yet" />
+            <Unknown reason="The agent has not planned the desired state yet" />
           )}
         </KVValue>
         <KVKey>Last plan</KVKey>
@@ -277,14 +278,9 @@ export function HostDrift({ host, state }: { host: Host; state: HostState }) {
         </KVValue>
       </KV>
 
-      {(drift?.status === 'drift' || hasUndeclared || drift?.revert_change) && (
+      {(drift?.status === 'drift' || hasUndeclared) && (
         <div className="row-wrap">
-          {drift?.revert_change ? (
-            <Link to="/changes/$changeId" params={{ changeId: drift.revert_change }}>
-              Open the revert change
-            </Link>
-          ) : (
-            drift?.status === 'drift' && (
+          {drift?.status === 'drift' && (
               <Button
                 size="sm"
                 variant="primary"
@@ -296,7 +292,6 @@ export function HostDrift({ host, state }: { host: Host; state: HostState }) {
                 {revert.isPending && <Spinner size="sm" />}
                 Revert
               </Button>
-            )
           )}
           {(drifted || hasUndeclared) && (
             <Button
@@ -315,11 +310,11 @@ export function HostDrift({ host, state }: { host: Host; state: HostState }) {
 
       <h3 className="t-h3">Plan to fix the drift</h3>
       <p className="muted">
-        The agent plans the approved state on start and once a day. Revert opens a change that applies this plan once
-        you approve it.
+        The agent plans the desired state on start and once a day. Revert starts a sync of this host, which applies
+        this plan once you sign it.
         {drift?.ignored && ' Ignore hid this drift until it changes.'}
       </p>
-      <PlanView plan={drift} waiting="The agent plans the approved state when it starts, then once a day." />
+      <PlanView plan={drift} waiting="The agent plans the desired state when it starts, then once a day." />
 
       <h3 className="t-h3">Undeclared packages</h3>
       {undeclared === null ? (

@@ -33,8 +33,8 @@ type Props = {
   onClose: () => void;
 };
 
-/** Adds an undeclared package to a role or to the host's adjustments, as an
- *  edit of the draft. */
+/** Adds an undeclared package to a role or to the host's adjustments. The
+ *  hosts get it at their next sync. */
 export function AdoptDialog({ host, pkg, onClose }: Props) {
   return (
     <Dialog open={pkg !== null} onOpenChange={(open) => !open && onClose()}>
@@ -52,10 +52,10 @@ function AdoptForm({ host, pkg, onClose }: { host: Host; pkg: string; onClose: (
     mutationFn: () => adoptPackage(host.id, pkg, target === HOST ? null : target),
     onSuccess: async () => {
       await Promise.all(
-        [['changes'], ['roles'], ['hosts']].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+        [['syncs'], ['roles'], ['hosts']].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
       );
       onClose();
-      toast('success', 'Package added to the draft', `Approve the draft to make ${pkg} part of the desired state.`);
+      toast('success', `${pkg} adopted`, `It is part of the desired state now. Sync to apply it.`);
     },
   });
 
@@ -69,7 +69,7 @@ function AdoptForm({ host, pkg, onClose }: { host: Host; pkg: string; onClose: (
       <DialogHeader>
         <DialogTitle>Adopt {pkg}?</DialogTitle>
         <DialogDescription>
-          The draft gets {pkg} at version latest. A role gives it to every host with the role.
+          {pkg} joins the desired state at version latest. A role gives it to every host with the role.
         </DialogDescription>
       </DialogHeader>
       <DialogBody className="stack">
@@ -83,7 +83,7 @@ function AdoptForm({ host, pkg, onClose }: { host: Host; pkg: string; onClose: (
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={HOST}>Only {host.name}</SelectItem>
-              {(roles.data ?? []).map((role) => (
+              {(roles.data ?? []).filter((role) => !role.builtin).map((role) => (
                 <SelectItem key={role.id} value={role.id}>
                   Role {role.name}
                 </SelectItem>
@@ -98,7 +98,7 @@ function AdoptForm({ host, pkg, onClose }: { host: Host; pkg: string; onClose: (
         </Button>
         <Button type="submit" variant="primary" aria-busy={mutation.isPending}>
           {mutation.isPending && <Spinner size="sm" />}
-          Add to draft
+          Adopt
         </Button>
       </DialogFooter>
     </Form>

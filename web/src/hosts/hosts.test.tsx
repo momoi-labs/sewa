@@ -173,7 +173,7 @@ describe('hosts', () => {
     await user.click(screen.getByRole('tab', { name: 'Events' }));
     const rows = (await screen.findAllByRole('row')).slice(1);
     expect(rows.map((row) => within(row).getAllByRole('cell')[1]!.textContent)).toEqual([
-      `The host drifted from its approved state${formatReceived('2026-01-01T12:00:00Z')}`,
+      `The host drifted from its desired state${formatReceived('2026-01-01T12:00:00Z')}`,
       `No reports from ${formatDateTime('2026-01-01T11:00:00Z')} to ${formatDateTime('2026-01-01T12:00:00Z')}`,
       'Agent connected',
       'Install token traded for an agent credential',

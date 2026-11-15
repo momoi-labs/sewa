@@ -1,17 +1,21 @@
 import { ApplicationShell, type ApplicationShellGroup, ThemeSelector } from '@momoi-labs/kiso-react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { GitPullRequestDraft, KeyRound, Layers, Server } from 'lucide-react';
+import { KeyRound, Layers, RefreshCw, Server } from 'lucide-react';
 import { useState } from 'react';
 
+import { instanceQuery } from '../api';
 import { SewaMark } from './SewaMark';
 import { applyTheme, savedTheme, type Theme } from './theme';
 
 /** The frame of every page: the brand, the theme, and the destinations
- *  Hosts, Roles, Changes and Passkeys. */
+ *  Hosts, Roles, Sync and Passkeys. The brand slot shows
+ *  the instance address under the name. */
 export function Shell() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [theme, setTheme] = useState<Theme>(savedTheme);
+  const instance = useQuery({ ...instanceQuery, throwOnError: false });
 
   const navigation: ApplicationShellGroup[] = [
     {
@@ -31,11 +35,11 @@ export function Shell() {
           onClick: () => void navigate({ to: '/roles' }),
         },
         {
-          href: '/changes',
-          label: 'Changes',
-          leading: <GitPullRequestDraft className="icon" aria-hidden="true" />,
-          active: pathname.startsWith('/changes'),
-          onClick: () => void navigate({ to: '/changes' }),
+          href: '/sync',
+          label: 'Sync',
+          leading: <RefreshCw className="icon" aria-hidden="true" />,
+          active: pathname.startsWith('/sync'),
+          onClick: () => void navigate({ to: '/sync' }),
         },
         {
           href: '/passkeys',
@@ -51,9 +55,12 @@ export function Shell() {
   return (
     <ApplicationShell
       brand={
-        <Link to="/" className="brand">
+        <Link to="/" className="brand brand-slot" aria-label="sewa, home">
           <SewaMark />
-          <span className="t-label">sewa</span>
+          <span className="brand-slot-text">
+            <span className="brand-slot-name">sewa</span>
+            {instance.data && <span className="brand-slot-site">{address(instance.data.address)}</span>}
+          </span>
         </Link>
       }
       navigation={navigation}
@@ -77,4 +84,9 @@ export function Shell() {
       </div>
     </ApplicationShell>
   );
+}
+
+/** The instance address without its scheme, as the header shows it. */
+function address(url: string): string {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
