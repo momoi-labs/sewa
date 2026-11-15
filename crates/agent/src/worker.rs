@@ -255,10 +255,10 @@ impl Worker {
                 return;
             }
         };
-        if self.answered.contains(&signed.approval_id) {
+        if self.answered.contains(&signed.approval.approval_id) {
             return;
         }
-        self.answered.push(signed.approval_id);
+        self.answered.push(signed.approval.approval_id);
         if self.answered.len() > ANSWERED_LIMIT {
             self.answered.remove(0);
         }
@@ -269,10 +269,10 @@ impl Worker {
         let (status, plan_hash, log) = self.check_and_apply(&signed);
         eprintln!(
             "sewa-agent: approval {} of change {}: {status}",
-            signed.approval_id, signed.approval.change_id
+            signed.approval.approval_id, signed.approval.change_id
         );
         let outcome = Outcome {
-            approval_id: signed.approval_id,
+            approval_id: signed.approval.approval_id,
             change_id: signed.approval.change_id,
             status: status.to_owned(),
             plan_hash,
@@ -339,7 +339,7 @@ impl Worker {
             );
         }
         let applying = Applying {
-            approval_id: signed.approval_id,
+            approval_id: signed.approval.approval_id,
             change_id: signed.approval.change_id,
             plan_hash: Some(plan.plan_hash.clone()),
         };
@@ -581,6 +581,7 @@ exit 1
             fn approval(&self) -> Approval {
                 let plan = fs::read(self.root.join("plan.json")).unwrap();
                 Approval {
+                    approval_id: Uuid::now_v7(),
                     change_id: Uuid::now_v7(),
                     hosts: vec![HostPlan {
                         host_id: self.host,
@@ -598,7 +599,6 @@ exit 1
             /// Sends an approval and returns the result.
             fn send(&mut self, approval: Approval, assertion: Assertion) -> Outcome {
                 let signed = Signed {
-                    approval_id: Uuid::now_v7(),
                     approval,
                     assertion,
                 };
@@ -616,7 +616,7 @@ exit 1
                     .expect("a result");
                 assert_eq!(outcome.r#type, sewa_approval::RESULT_TYPE);
                 let outcome: Outcome = serde_json::from_slice(&outcome.data).unwrap();
-                assert_eq!(outcome.approval_id, signed.approval_id);
+                assert_eq!(outcome.approval_id, signed.approval.approval_id);
                 assert_eq!(outcome.change_id, signed.approval.change_id);
                 outcome
             }
@@ -657,7 +657,6 @@ exit 1
             fn signed(&self) -> CustomMessage {
                 let approval = self.approval();
                 let signed = Signed {
-                    approval_id: Uuid::now_v7(),
                     assertion: self.sign(&approval),
                     approval,
                 };
@@ -855,11 +854,11 @@ exit 1
             state
                 .write(
                     ANSWERED,
-                    &serde_json::to_vec(&[approval.approval_id]).unwrap(),
+                    &serde_json::to_vec(&[approval.approval.approval_id]).unwrap(),
                 )
                 .unwrap();
             let applying = Applying {
-                approval_id: approval.approval_id,
+                approval_id: approval.approval.approval_id,
                 change_id: approval.approval.change_id,
                 plan_hash: Some("p".to_owned()),
             };
@@ -917,7 +916,6 @@ exit 1
             let mut fixture = Fixture::new();
             let approval = fixture.approval();
             let signed = Signed {
-                approval_id: Uuid::now_v7(),
                 assertion: fixture.sign(&approval),
                 approval,
             };
@@ -929,6 +927,27 @@ exit 1
             fixture.worker.approval(&custom);
             fixture.worker.approval(&custom);
             assert_eq!(fixture.applies().len(), 1);
+        }
+
+        #[test]
+        fn a_replayed_assertion_under_a_new_id_applies_nothing() {
+            let mut fixture = Fixture::new();
+            let approval = fixture.approval();
+            let assertion = fixture.sign(&approval);
+            let outcome = fixture.send(approval.clone(), assertion.clone());
+            assert_eq!(outcome.status, "applied", "{outcome:?}");
+            let mut approval = approval;
+            approval.approval_id = Uuid::now_v7();
+            let replay = Signed {
+                approval,
+                assertion,
+            };
+            fixture.worker.approval(&CustomMessage {
+                capability: sewa_approval::CAPABILITY.to_owned(),
+                r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
+                data: serde_json::to_vec(&replay).unwrap(),
+            });
+            assert_eq!(fixture.applies().len(), 1, "the replay applies nothing");
         }
 
         #[test]

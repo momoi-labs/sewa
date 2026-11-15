@@ -49,20 +49,25 @@ pub struct HostPlan {
     pub plan_hash: String,
 }
 
-/// What a person approves: one change, and the plan of each host.
+/// What a person approves: one change, and the plan of each host. Its id
+/// is signed, so an agent answers each signature once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Approval {
+    pub approval_id: Uuid,
     pub change_id: Uuid,
     pub hosts: Vec<HostPlan>,
 }
 
 impl Approval {
-    /// The text the challenge hashes: a header, the change, then one line
-    /// per host in host id order.
+    /// The text the challenge hashes: a header, the approval, the change,
+    /// then one line per host in host id order.
     pub fn signed_text(&self) -> String {
         let mut hosts: Vec<&HostPlan> = self.hosts.iter().collect();
         hosts.sort_by_key(|host| host.host_id);
-        let mut text = format!("{HEADER}\nchange {}\n", self.change_id);
+        let mut text = format!(
+            "{HEADER}\napproval {}\nchange {}\n",
+            self.approval_id, self.change_id
+        );
         for host in hosts {
             text.push_str(&format!(
                 "host {} instance {} config {} plan {}\n",
@@ -95,11 +100,10 @@ pub struct Assertion {
     pub signature: String,
 }
 
-/// An approval with its id and the assertion that signs it, as the
-/// controller sends it to an agent.
+/// An approval and the assertion that signs it, as the controller sends it
+/// to an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signed {
-    pub approval_id: Uuid,
     #[serde(flatten)]
     pub approval: Approval,
     pub assertion: Assertion,
@@ -354,6 +358,7 @@ mod tests {
 
     fn approval() -> Approval {
         Approval {
+            approval_id: Uuid::from_u128(4),
             change_id: Uuid::from_u128(1),
             hosts: vec![
                 HostPlan {
@@ -385,6 +390,7 @@ mod tests {
         assert_eq!(
             approval().signed_text(),
             "sewa approval v1\n\
+             approval 00000000-0000-0000-0000-000000000004\n\
              change 00000000-0000-0000-0000-000000000001\n\
              host 00000000-0000-0000-0000-000000000002 instance 00000000-0000-0000-0000-000000000014 config c2 plan p2\n\
              host 00000000-0000-0000-0000-000000000003 instance 00000000-0000-0000-0000-00000000001e config c3 plan p3\n"

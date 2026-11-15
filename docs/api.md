@@ -322,16 +322,18 @@ one failed host.
 ```json
 { "challenge": "<base64url>", "rp_id": "sewa.example.com",
   "allow_credentials": ["<base64url>"], "signed_text": "sewa approval v1\n…",
-  "change_id": "<sync id>",
+  "approval_id": "…", "change_id": "<sync id>",
   "hosts": [{ "host_id": "…", "instance_uid": "…", "config_hash": "…", "plan_hash": "…" }] }
 ```
 
 The hosts are those in step `picked`, `failed`, or `replan` with an agent
 and a plan of their current config that has changes (exit code 2).
-`change_id` holds the sync id: agents read this field. `signed_text` is:
+`approval_id` is new on each call. `change_id` holds the sync id: agents
+read this field. `signed_text` is:
 
 ```text
 sewa approval v1
+approval <approval id>
 change <sync id>
 host <host id> instance <agent instance uid> config <config hash> plan <plan hash>
 ```
@@ -345,15 +347,16 @@ only hosts in sync, `hosts` is empty and the signature marks them.
 ### `POST /api/syncs/{id}/approve`
 
 Takes the WebAuthn assertion of the challenge, as unpadded base64url, and
-the same `hosts` as the approval call:
+the `approval_id` and `hosts` of the approval call:
 
 ```json
 { "credential_id": "…", "authenticator_data": "…", "client_data_json": "…", "signature": "…",
-  "hosts": null }
+  "approval_id": "…", "hosts": null }
 ```
 
 The controller checks it as an agent does, against the signed-in user's
-passkeys, and checks that the plans did not change. It stores the
+passkeys, and checks that the plans did not change. An approval id signs
+once: a second approve with it gets `409` `plans_changed`. It stores the
 approval and the assertion, and sets each signed host to `waiting`.
 Picked hosts in sync go to `in_sync`, and the other picked hosts to
 `skipped`. Returns the sync. Records `sync.approved` per signed host.
@@ -600,7 +603,8 @@ config first. Then the agent:
 It applies only when every check passes, with
 `mise -C <dir> bootstrap --yes --only packages,tools` and the same
 isolation as the plan, then plans `current` again. It answers once per
-approval with type `result`:
+approval id, which the signature covers, so a replayed signature applies
+nothing. It answers with type `result`:
 
 ```json
 { "approval_id": "…", "change_id": "…", "status": "applied", "plan_hash": "…", "log": "…",

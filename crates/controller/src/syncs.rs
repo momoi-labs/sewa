@@ -364,10 +364,10 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(sync)))
 }
 
-/// What a signature of the sync would cover now: the hosts to sign, the
-/// picked hosts already in sync, and the picked hosts without a plan to
-/// sign. Only the hosts in `only` count, when given. 404 `not_found`, 409
-/// `nothing_to_approve`.
+/// What a signature of the sync would cover now, as approval
+/// `approval_id`: the hosts to sign, the picked hosts already in sync, and
+/// the picked hosts without a plan to sign. Only the hosts in `only` count,
+/// when given. 404 `not_found`, 409 `nothing_to_approve`.
 struct Targets {
     approval: Approval,
     in_sync: Vec<Uuid>,
@@ -377,11 +377,13 @@ struct Targets {
 async fn targets(
     connection: &mut PgConnection,
     id: Uuid,
+    approval_id: Uuid,
     only: Option<&[Uuid]>,
 ) -> ApiResult<Targets> {
     let sync = load(&mut *connection, id).await?;
     let mut targets = Targets {
         approval: Approval {
+            approval_id,
             change_id: id,
             hosts: Vec::new(),
         },
@@ -462,7 +464,8 @@ pub async fn options(
             .map_err(|_| Failure::new(StatusCode::BAD_REQUEST, "invalid_body"))?
     };
     let mut connection = state.pool.acquire().await?;
-    let targets = targets(&mut connection, id, only.hosts.as_deref()).await?;
+    // A new id for each signature, so an agent applies it once.
+    let targets = targets(&mut connection, id, Uuid::new_v4(), only.hosts.as_deref()).await?;
     let keys = passkeys::keys(&mut connection, &state.public_url, Some(&identity.login)).await?;
     if keys.keys.is_empty() {
         return Err(conflict("no_passkey"));
@@ -478,6 +481,8 @@ pub async fn options(
 
 #[derive(Debug, Deserialize)]
 pub struct Approve {
+    /// The `approval_id` of the options it signs.
+    pub approval_id: Uuid,
     #[serde(flatten)]
     pub assertion: Assertion,
     #[serde(default)]
@@ -488,7 +493,7 @@ pub struct Approve {
 /// challenge from `options`, with the same `hosts`. The assertion must
 /// come from a passkey of the signed-in user (400 `invalid_assertion`
 /// otherwise), and sign the plans as they are now (409 `plans_changed`
-/// otherwise). Each signed host waits for its agent; a picked host in sync
+/// otherwise). Each approval id signs once (409 `plans_changed`). Each signed host waits for its agent; a picked host in sync
 /// becomes `in_sync`, and one without a plan `skipped`.
 pub async fn approve(
     State(state): State<AppState>,
@@ -503,7 +508,13 @@ pub async fn approve(
         .fetch_optional(&mut *transaction)
         .await?;
     found.ok_or_else(not_found)?;
-    let targets = targets(&mut transaction, id, approve.hosts.as_deref()).await?;
+    let targets = targets(
+        &mut transaction,
+        id,
+        approve.approval_id,
+        approve.hosts.as_deref(),
+    )
+    .await?;
     let keys = passkeys::keys(&mut transaction, &state.public_url, Some(&identity.login)).await?;
     let approver = sewa_approval::verify(&keys, &approve.assertion, &targets.approval.challenge())
         .map_err(|rejection| match rejection {
@@ -528,17 +539,22 @@ pub async fn approve(
             .await?;
         let hosts = serde_json::to_value(&targets.approval.hosts).map_err(|_| internal())?;
         let assertion = serde_json::to_value(&approve.assertion).map_err(|_| internal())?;
-        let approval_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO approvals (sync_id, by, passkey_id, hosts, assertion)
-             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        let approval_id = targets.approval.approval_id;
+        let inserted = sqlx::query(
+            "INSERT INTO approvals (id, sync_id, by, passkey_id, hosts, assertion)
+             VALUES ($6, $1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING",
         )
         .bind(id)
         .bind(&identity.login)
         .bind(passkey)
         .bind(&hosts)
         .bind(&assertion)
-        .fetch_one(&mut *transaction)
+        .bind(approval_id)
+        .execute(&mut *transaction)
         .await?;
+        if inserted.rows_affected() == 0 {
+            return Err(conflict("plans_changed"));
+        }
         for host in &targets.approval.hosts {
             sqlx::query(
                 "UPDATE sync_hosts SET status = 'waiting', approval_id = $3, plan_hash = $4,
@@ -587,8 +603,8 @@ pub async fn pending(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<Option<Sig
     .await?;
     Ok(row.and_then(|(approval_id, sync_id, hosts, assertion)| {
         Some(Signed {
-            approval_id,
             approval: Approval {
+                approval_id,
                 change_id: sync_id,
                 hosts: serde_json::from_value(hosts).ok()?,
             },
