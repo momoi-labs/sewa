@@ -101,7 +101,7 @@ async fn create_host(app: &Router, name: &str) -> (String, String) {
         ADMIN,
         "POST",
         "/api/hosts",
-        Some(json!({ "name": name, "os": "linux" })),
+        Some(json!({ "name": name })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -134,13 +134,18 @@ fn attribute(key: &str, value: &str) -> KeyValue {
 }
 
 fn report(instance: Uuid, described: bool) -> AgentToServer {
+    report_os(instance, described, "linux")
+}
+
+/// A report whose description names `os` as `os.type`.
+fn report_os(instance: Uuid, described: bool, os: &str) -> AgentToServer {
     AgentToServer {
         instance_uid: instance.as_bytes().to_vec(),
         agent_description: described.then(|| AgentDescription {
             identifying_attributes: vec![attribute("service.version", "0.1.0")],
             non_identifying_attributes: vec![
                 attribute("host.name", "node-1"),
-                attribute("os.type", "linux"),
+                attribute("os.type", os),
                 attribute("host.arch", "amd64"),
                 attribute("process.owner", "root"),
             ],
@@ -191,11 +196,12 @@ async fn a_new_host_waits_with_an_install_command(pool: PgPool) {
         ADMIN,
         "POST",
         "/api/hosts",
-        Some(json!({ "name": "node-1", "os": "macos" })),
+        Some(json!({ "name": "node-1" })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(created["host"]["status"], "waiting");
+    assert_eq!(created["host"]["os"], Value::Null);
     assert!(
         created["install_command"]
             .as_str()
@@ -204,7 +210,8 @@ async fn a_new_host_waits_with_an_install_command(pool: PgPool) {
     );
     let (_, hosts) = json_call(&app, ADMIN, "GET", "/api/hosts", None).await;
     assert_eq!(hosts[0]["name"], "node-1");
-    assert_eq!(hosts[0]["os"], "macos");
+    // The agent reports the OS when it connects.
+    assert_eq!(hosts[0]["os"], Value::Null);
     assert_eq!(hosts[0]["status"], "waiting");
     assert_eq!(hosts[0]["agent"], Value::Null);
     let id = created["host"]["id"].as_str().unwrap();
@@ -215,24 +222,12 @@ async fn a_new_host_waits_with_an_install_command(pool: PgPool) {
         ADMIN,
         "POST",
         "/api/hosts",
-        Some(json!({ "name": "node-1", "os": "linux" })),
+        Some(json!({ "name": "node-1" })),
     )
     .await;
     assert_eq!(
         (status, body),
         (StatusCode::CONFLICT, json!({ "error": "name_taken" }))
-    );
-    let (status, body) = json_call(
-        &app,
-        ADMIN,
-        "POST",
-        "/api/hosts",
-        Some(json!({ "name": "node-2", "os": "windows" })),
-    )
-    .await;
-    assert_eq!(
-        (status, body),
-        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_os" }))
     );
 }
 
@@ -426,10 +421,7 @@ async fn a_host_reads_with_its_events_newest_first(pool: PgPool) {
         .map(|event| event["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["host.enrolled", "host.created"]);
-    assert_eq!(
-        events[1]["data"],
-        json!({ "name": "node-1", "os": "linux" })
-    );
+    assert_eq!(events[1]["data"], json!({ "name": "node-1" }));
     assert!(events[1]["at"].is_string());
 
     let (status, _) = json_call(&app, OTHER_USER, "GET", &uri, None).await;
@@ -605,17 +597,18 @@ async fn the_bootstrap_role_is_built_in(pool: PgPool) {
     let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
     assert_eq!(roles[0]["items"], bootstrap["items"]);
     // Every host gets it with the OS's package manager.
-    let (linux, _) = create_host(&app, "build-1").await;
-    let (status, created) = json_call(
+    let (linux, token) = create_host(&app, "build-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    opamp(&app, &credential, &report(Uuid::new_v4(), true)).await;
+    let (mac, token) = create_host(&app, "mac-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    opamp(
         &app,
-        ADMIN,
-        "POST",
-        "/api/hosts",
-        Some(json!({ "name": "mac-1", "os": "macos" })),
+        &credential,
+        &report_os(Uuid::new_v4(), true, "darwin"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let mac = created["host"]["id"].as_str().unwrap();
+    let mac = mac.as_str();
     let config = host_state(&app, &linux).await["config"]
         .as_str()
         .unwrap()
@@ -655,9 +648,44 @@ async fn the_bootstrap_role_is_built_in(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn the_agent_reports_the_hosts_os(pool: PgPool) {
+    let app = app(pool);
+    let (host, token) = create_host(&app, "build-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    let uri = format!("/api/hosts/{host}");
+    let os = |app: Router, uri: String| async move {
+        json_call(&app, ADMIN, "GET", &uri, None).await.1["os"].clone()
+    };
+    assert_eq!(os(app.clone(), uri.clone()).await, Value::Null);
+
+    // A Mac gets a Mac config from its first report.
+    let instance = Uuid::new_v4();
+    let (status, body) = opamp(&app, &credential, &report_os(instance, true, "darwin")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let remote = ServerToAgent::decode(&body[..])
+        .unwrap()
+        .remote_config
+        .unwrap();
+    let config =
+        String::from_utf8_lossy(&remote.config.unwrap().config_map["current"].body).into_owned();
+    assert!(config.contains("\"brew:mise\" = \"latest\""), "{config}");
+    assert_eq!(os(app.clone(), uri.clone()).await, "macos");
+
+    // Each later report sets it again; one without a description or with
+    // an OS sewa does not know leaves it.
+    opamp(&app, &credential, &report_os(instance, true, "linux")).await;
+    assert_eq!(os(app.clone(), uri.clone()).await, "linux");
+    opamp(&app, &credential, &report_os(instance, false, "darwin")).await;
+    opamp(&app, &credential, &report_os(instance, true, "freebsd")).await;
+    assert_eq!(os(app.clone(), uri.clone()).await, "linux");
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
 async fn hosts_get_roles_and_items_for_their_os(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, _) = create_host(&app, "build-1").await;
+    let (host, token) = create_host(&app, "build-1").await;
+    let (_, credential) = enroll(&app, NODE, &token).await;
+    opamp(&app, &credential, &report(Uuid::new_v4(), true)).await;
     let role = create_role(&app, "base").await;
     save_role(
         &app,

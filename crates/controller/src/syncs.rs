@@ -114,7 +114,7 @@ pub struct HostResult {
 pub struct SyncHost {
     pub id: Uuid,
     pub name: String,
-    pub os: String,
+    pub os: Option<String>,
     pub status: Status,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub roles: Vec<Named>,
@@ -177,7 +177,7 @@ fn sync_status(hosts: &[SyncHost]) -> &'static str {
 type SyncHostRow = (
     Uuid,
     String,
-    String,
+    Option<String>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     String,

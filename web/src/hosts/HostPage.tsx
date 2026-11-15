@@ -135,7 +135,7 @@ function Summary({ host, now }: { host: Host; now: number }) {
   return (
     <KV>
       <KVKey>OS</KVKey>
-      <KVValue>{osNames[host.os] ?? host.os}</KVValue>
+      <KVValue>{host.os ? osNames[host.os] : notYet('The agent reports the OS when it connects')}</KVValue>
       <KVKey>Created</KVKey>
       <KVValue>
         <Moment at={host.created_at} />

@@ -14,14 +14,12 @@ import {
   DialogTitle,
   Form,
   FormField,
-  RadioGroup,
-  RadioGroupItem,
   Spinner,
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useState } from 'react';
 
-import { ApiFailure, type Created, createHost, hostsQuery, type Os } from '../api';
+import { ApiFailure, type Created, createHost, hostsQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatClock } from '../format';
 import { HostStatusBadge } from './HostStatusBadge';
@@ -48,11 +46,10 @@ export function AddHostDialog({ open, onOpenChange }: Props) {
 function AddHostForm({ onBusy, onClose }: { onBusy: (busy: boolean) => void; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
-  const [os, setOs] = useState<Os>('linux');
   const [checked, setChecked] = useState(false);
   const [created, setCreated] = useState<Created | null>(null);
   const mutation = useMutation({
-    mutationFn: () => createHost(name.trim(), os),
+    mutationFn: () => createHost(name.trim()),
     onMutate: () => onBusy(true),
     onSettled: () => onBusy(false),
     onSuccess: async (result) => {
@@ -83,7 +80,7 @@ function AddHostForm({ onBusy, onClose }: { onBusy: (busy: boolean) => void; onC
     <Form onSubmit={submit} noValidate>
       <DialogHeader>
         <DialogTitle>Add a host</DialogTitle>
-        <DialogDescription>sewa gives you a command to run on the host. It installs the agent.</DialogDescription>
+        <DialogDescription>sewa gives you a command to run on the host. It installs the agent, which reports the host's OS.</DialogDescription>
       </DialogHeader>
       <DialogBody className="stack">
         {mutation.isError && code !== 'name_taken' && <ErrorAlert error={mutation.error} />}
@@ -99,10 +96,6 @@ function AddHostForm({ onBusy, onClose }: { onBusy: (busy: boolean) => void; onC
           onChange={(event) => setName(event.target.value)}
           error={nameError}
         />
-        <RadioGroup label="Operating system" variant="segmented" value={os} onValueChange={(value) => setOs(value as Os)}>
-          <RadioGroupItem value="linux" label="Linux" />
-          <RadioGroupItem value="macos" label="macOS" />
-        </RadioGroup>
       </DialogBody>
       <DialogFooter>
         <Button type="button" variant="ghost" disabled={mutation.isPending} onClick={onClose}>

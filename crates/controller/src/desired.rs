@@ -229,9 +229,10 @@ impl State {
                     .insert((kind, name), adjustment);
             }
         }
-        let hosts: Vec<(Uuid, String)> = sqlx::query_as("SELECT id, os FROM hosts")
-            .fetch_all(&mut *connection)
-            .await?;
+        let hosts: Vec<(Uuid, String)> =
+            sqlx::query_as("SELECT id, os FROM hosts WHERE os IS NOT NULL")
+                .fetch_all(&mut *connection)
+                .await?;
         state.host_os.extend(hosts);
         Ok(state)
     }

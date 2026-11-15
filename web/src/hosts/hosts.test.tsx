@@ -22,7 +22,7 @@ const connected: Host = {
 const waiting: Host = {
   id: '22222222-2222-4222-8222-222222222222',
   name: 'laptop',
-  os: 'macos',
+  os: null,
   status: 'waiting',
   created_at: '2026-01-01T11:00:00Z',
   enrolled_at: null,
@@ -55,7 +55,7 @@ describe('hosts', () => {
     expect(within(row).getByText('0.1.0')).toBeInTheDocument();
     expect(within(row).getByText(/seconds ago/)).toBeInTheDocument();
     const other = screen.getByRole('link', { name: 'laptop' }).closest('tr')!;
-    expect(within(other).getByText('macOS')).toBeInTheDocument();
+    expect(within(other).getByRole('img', { name: 'The agent reports the OS when it connects' })).toBeInTheDocument();
     expect(within(other).getByText('Waiting')).toBeInTheDocument();
     expect(within(other).getByRole('img', { name: 'The agent has not reported yet' })).toBeInTheDocument();
     expect(screen.getByText('2 hosts')).toBeInTheDocument();
@@ -140,6 +140,8 @@ describe('hosts', () => {
     renderRoute('/');
     await user.click(await screen.findByRole('button', { name: 'Add a host' }));
     const dialog = await screen.findByRole('dialog');
+    // The agent reports the OS; the admin does not pick it.
+    expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Add host' }));
     expect(within(dialog).getByText('Enter a name.')).toBeInTheDocument();
 
@@ -149,13 +151,12 @@ describe('hosts', () => {
 
     await user.clear(within(dialog).getByLabelText('Name'));
     await user.type(within(dialog).getByLabelText('Name'), 'mac-1');
-    await user.click(within(dialog).getByRole('radio', { name: 'macOS' }));
     await user.click(within(dialog).getByRole('button', { name: 'Add host' }));
     expect(await within(dialog).findByText('Install the agent on mac-1')).toBeInTheDocument();
     expect(within(dialog).getByText(/sudo sh -s -- 'secret'/)).toBeInTheDocument();
     expect(within(dialog).getByText(/works once and is valid for 1 hour/)).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: /copy/i })).toBeInTheDocument();
-    expect(calls.filter((call) => call.method === 'POST').at(-1)?.body).toEqual({ name: 'mac-1', os: 'macos' });
+    expect(calls.filter((call) => call.method === 'POST').at(-1)?.body).toEqual({ name: 'mac-1' });
   });
 
   it('shows a host with its events, newest first', async () => {

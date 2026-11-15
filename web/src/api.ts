@@ -17,7 +17,8 @@ export type Agent = {
 export type Host = {
   id: string;
   name: string;
-  os: Os;
+  /** Null until the agent connects and reports it. */
+  os: Os | null;
   status: HostStatus;
   created_at: string;
   enrolled_at: string | null;
@@ -125,8 +126,8 @@ export const eventsQuery = (id: string) =>
     refetchInterval: poll,
   });
 
-export function createHost(name: string, os: Os) {
-  return api<Created>('POST', '/api/hosts', { name, os });
+export function createHost(name: string) {
+  return api<Created>('POST', '/api/hosts', { name });
 }
 
 export type ItemKind = 'package' | 'tool';
@@ -266,7 +267,7 @@ export type HostResult = {
 export type SyncHost = {
   id: string;
   name: string;
-  os: Os;
+  os: Os | null;
   status: HostStatus;
   last_seen_at: string | null;
   roles: Named[];

@@ -77,7 +77,6 @@ pub async fn require_admin(
 #[derive(Debug, Deserialize)]
 pub struct NewHost {
     pub name: String,
-    pub os: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,7 +92,8 @@ pub struct Agent {
 pub struct Host {
     pub id: Uuid,
     pub name: String,
-    pub os: String,
+    /// `linux` or `macos`, as the agent reports it; null until it does.
+    pub os: Option<String>,
     pub status: Status,
     pub created_at: DateTime<Utc>,
     pub enrolled_at: Option<DateTime<Utc>>,
@@ -128,17 +128,13 @@ pub async fn create(
     if !valid_name(&new.name) {
         return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_name"));
     }
-    if !matches!(new.os.as_str(), "linux" | "macos") {
-        return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_os"));
-    }
     let mut transaction = state.pool.begin().await?;
     let row: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "INSERT INTO hosts (name, os) VALUES ($1, $2)
+        "INSERT INTO hosts (name) VALUES ($1)
          ON CONFLICT (name) DO NOTHING
          RETURNING id, created_at",
     )
     .bind(&new.name)
-    .bind(&new.os)
     .fetch_optional(&mut *transaction)
     .await?;
     let (id, created_at) = row.ok_or(Failure::new(StatusCode::CONFLICT, "name_taken"))?;
@@ -157,7 +153,7 @@ pub async fn create(
         &mut transaction,
         id,
         events::HOST_CREATED,
-        serde_json::json!({ "name": new.name, "os": new.os }),
+        serde_json::json!({ "name": new.name }),
     )
     .await?;
     transaction.commit().await?;
@@ -166,7 +162,7 @@ pub async fn create(
         host: Host {
             id,
             name: new.name,
-            os: new.os,
+            os: None,
             status: Status::Waiting,
             created_at,
             enrolled_at: None,
@@ -182,7 +178,7 @@ pub async fn create(
 type Row = (
     Uuid,
     String,
-    String,
+    Option<String>,
     DateTime<Utc>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,

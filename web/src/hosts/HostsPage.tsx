@@ -80,7 +80,7 @@ export function HostsPage() {
                           {host.name}
                         </Link>
                       </TableCell>
-                      <TableCell>{osNames[host.os] ?? host.os}</TableCell>
+                      <TableCell>{host.os ? osNames[host.os] : <Unknown reason="The agent reports the OS when it connects" />}</TableCell>
                       <TableCell>
                         <HostStatusBadge status={host.status} />
                       </TableCell>
