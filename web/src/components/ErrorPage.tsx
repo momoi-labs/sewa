@@ -17,22 +17,22 @@ export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => v
   const titleId = useId();
   const status = error instanceof ApiFailure ? error.status : 500;
   const denied = error instanceof ApiFailure && error.code === 'not_admin';
-  const art = denied ? 'error-403' : 'error-500';
+  const art = denied ? 'error-403' : status === 0 ? 'error-offline' : 'error-500';
   const page = denied
     ? {
-        title: 'The guardian said no',
-        body: 'This area is restricted to sewa admins. Ask the person who runs the controller to add your login to SEWA_ADMINS.',
+        title: 'Access denied',
+        body: 'Ask an admin to add your login to SEWA_ADMINS.',
         action: 'Check again',
       }
     : status === 0
       ? {
           title: 'The controller did not answer',
-          body: 'The guardian is looking into it. Check that sewa-controller runs, then retry.',
+          body: 'Check that the controller is running, then retry.',
           action: 'Retry',
         }
       : {
           title: 'Something broke on our side',
-          body: 'The guardian is fixing it. The controller log has the details. Retry in a moment.',
+          body: 'Check the controller log, then retry.',
           action: 'Retry',
         };
 

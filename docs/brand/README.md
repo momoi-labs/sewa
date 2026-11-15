@@ -39,7 +39,8 @@ background.
 | `cat-mono.svg` | The cat alone, in `currentColor`. |
 | `favicon.svg` | The favicon, a copy of `web/public/favicon.svg`. Keep the two the same. |
 | `error-403.svg`, `error-403-dark.svg` | An angry cat guards the server box: access denied (403). |
-| `error-500.svg`, `error-500-dark.svg` | A worried cat with a wrench on a cracked, taped box: the server failed (500, other 5xx, or no answer). |
+| `error-500.svg`, `error-500-dark.svg` | A worried cat with a wrench on a cracked, taped box: the server failed (500 or other 5xx). |
+| `error-offline.svg`, `error-offline-dark.svg` | A scared cat on the box, hands on its face: the controller did not answer. |
 | `usage.html` | A page that shows each file on a light and a dark background. Open it in a browser. |
 
 ## In the web app
@@ -51,7 +52,7 @@ background.
 - `SewaMark` holds the paths of `mark.svg`. Keep the two the same.
 - `web/public/favicon.svg` is the same emblem in a square viewBox. The
   ivory halo appears when the system uses a dark theme.
-- `ErrorPage` shows `error-403` or `error-500` above the status code, a
+- `ErrorPage` shows `error-403`, `error-500`, or `error-offline` above the status code, a
   title, one line, and one action. The app loads copies from `web/public/`.
   Keep them the same as the files here. Both variants load, and
   `ErrorPage.css` shows the one for the app's theme.
@@ -76,20 +77,21 @@ background.
 
 ## Error illustrations
 
-- Use `error-403` when access is denied, and `error-500` for a 5xx or a
-  controller that does not answer. Do not use them for a 404 or an empty list.
+- Use `error-403` when access is denied, `error-500` for a 5xx, and
+  `error-offline` when the controller does not answer. Do not use them for a 404 or an empty list.
 - Use one per page, 160 to 240 px high, centered above the copy. Do not use
   them as icons or below 120 px: the small parts stop reading.
 - Put the code, title, and text in the page, never in the art. The files have
   no text.
 - Pick the file by the background: the light file on light, the `-dark` file
   on dark. Do not recolor them.
-- They are traced like the emblem, with the same steps, from the error-page
-  reference: two cats over the captions "403" and "500". The captions and a
-  mouse cursor in the screenshot were left out: the crop stops above the
-  captions, and the cursor was painted over with the box color before the
-  trace. Light tones that touch the background, like the ground shadow, were
-  dropped. The colors are ink, sage, white, and mist (`#E7F3E3`) for the
-  smoke. Mist is kept only in the smoke clouds, which stand apart from the
-  cat and the box. Pale antialias pieces inside that shape, like the edges of
-  the inner ears, take the cat color. The `-dark` files add the ivory halo.
+- They are traced like the emblem, with the same steps, from three drawings
+  of the cats on a flat ivory background. The captions and other text were
+  left out. The cat fill and the page are the same ivory in the drawings, so
+  the cat is found by shape: the light area that the outline closes off. The
+  cat's soft shading becomes white. The soft ground shadow under the box was
+  dropped: on the dark background it would read as a pale smear. Small pieces
+  of any color, such as JPEG noise and antialias rings along the outline,
+  take the color around them. The colors are ink, sage, white, and mist
+  (`#E7F3E3`). Mist is only in the smoke clouds, which stand apart from the
+  cat and the box. The `-dark` files add the ivory halo.
