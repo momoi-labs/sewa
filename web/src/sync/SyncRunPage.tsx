@@ -360,6 +360,8 @@ function Apply({ sync, sign }: { sync: Sync; sign: ReturnType<typeof useSign> })
               ))}
             </LogView>
           )}
+          {/* A retry signs this plan, so it shows first. */}
+          {planState(host) === 'changes' && <PlanByPackage hosts={[host]} />}
           {sign.isError && sign.variables?.[0] === host.id && <PasskeyError error={sign.error} thing="sync" />}
           <div className="row-wrap">
             <Button
