@@ -14,6 +14,20 @@ When the controller is down, each agent keeps checking its last desired
 state and sends its reports once the controller is back. See
 [docs/api.md](docs/api.md).
 
+## Install a host
+
+The web app gives each new host a one-line command. It pipes the install
+script into `sudo sh` with a single-use token. The script installs the
+agent as a service, enrolls the host, and pins the approvers' passkeys.
+
+On a Mac without Homebrew, the script installs Homebrew first, for the
+user who runs the agent, with Homebrew's own installer. That user must be
+an admin, and the Xcode command line tools must be installed
+(`xcode-select --install`). The script says which requirement is missing
+and stops. The agent never installs Homebrew: a sync on a Mac without it
+fails with "Homebrew is missing; rerun the install script". See
+[docs/api.md](docs/api.md#get-install).
+
 ## What sewa will do
 
 - Run a node agent, written in Rust, as a system service on each machine:

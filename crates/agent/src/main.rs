@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
+mod native;
 mod opamp;
 mod outbox;
 mod plan;

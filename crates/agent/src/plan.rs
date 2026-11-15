@@ -17,6 +17,11 @@
 //! approval of its plan (see `worker`). Applying runs `mise bootstrap` with
 //! the same isolation, limited to the parts the controller renders:
 //! packages and tools.
+//!
+//! Native packages (see `native`) are planned and applied first, without
+//! mise. Their resources join mise's plan, and the plan hash covers both.
+//! When mise is missing, its items are listed as `create` if a native item
+//! installs mise, so the same run applies them; otherwise they fail alone.
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
@@ -28,6 +33,8 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::native::{self, Native, Split};
+
 /// The config of the approved state.
 pub const CURRENT: &str = "current";
 
@@ -36,6 +43,12 @@ const ERROR_LIMIT: usize = 4000;
 
 /// The longest apply log sent to the controller. The end is kept.
 const LOG_LIMIT: usize = 32 * 1024;
+
+/// The native items of a config and what is left for mise, next to its
+/// `mise.toml`, for the apply.
+const SPLIT: &str = "split.json";
+
+const MISE_MISSING: &str = "mise is missing";
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -70,6 +83,10 @@ pub struct Plan {
 
 pub struct Planner {
     pub mise: PathBuf,
+    /// Where else to look for mise when `mise` is a bare name that is not
+    /// in `PATH`: Homebrew installs it outside launchd's `PATH`.
+    pub mise_fallbacks: Vec<PathBuf>,
+    pub native: Native,
     /// `<state>/configs`.
     pub configs: PathBuf,
     /// An empty directory for mise's system and global config.
@@ -80,6 +97,11 @@ impl Planner {
     pub fn new(state_dir: &Path, mise: PathBuf) -> Self {
         Self {
             mise,
+            mise_fallbacks: vec![
+                "/opt/homebrew/bin/mise".into(),
+                "/usr/local/bin/mise".into(),
+            ],
+            native: Native::this(),
             configs: state_dir.join("configs"),
             empty: state_dir.join("mise-empty"),
         }
@@ -97,7 +119,7 @@ impl Planner {
         dir: &Path,
         inherited: impl IntoIterator<Item = (OsString, OsString)>,
     ) -> Command {
-        let mut command = Command::new(&self.mise);
+        let mut command = Command::new(self.find_mise().unwrap_or_else(|| self.mise.clone()));
         command.env_clear();
         command.envs(
             inherited
@@ -116,6 +138,15 @@ impl Planner {
         command
     }
 
+    /// The mise binary, if there is one.
+    pub fn find_mise(&self) -> Option<PathBuf> {
+        let mut candidates = vec![self.mise.clone()];
+        if self.mise.components().count() == 1 {
+            candidates.extend(self.mise_fallbacks.iter().cloned());
+        }
+        native::find(&candidates)
+    }
+
     /// Writes the config into its directory and plans it.
     pub fn plan(&self, config: &str, body: &[u8]) -> Plan {
         let config_hash = hash(body);
@@ -130,16 +161,119 @@ impl Planner {
         let Some(dir) = self.dir(config) else {
             return failed(format!("unknown config name {config}"));
         };
-        if let Err(error) = self.write(&dir, body) {
+        let split = self.native.split(body);
+        if let Err(error) = self.write(&dir, body, &split) {
             return failed(format!("cannot write {}: {error}", dir.display()));
         }
+        let mut natives = Vec::new();
+        if !split.native.is_empty() {
+            match self.native.plan(&split.native) {
+                Ok(resources) => natives = resources,
+                // Nothing is planned on top of native items that fail.
+                Err(error) => {
+                    let plan = json!({
+                        "resources": split
+                            .native
+                            .iter()
+                            .map(|item| native::resource(&item.key, "unknown"))
+                            .collect::<Vec<_>>(),
+                    });
+                    return Plan {
+                        config: config.to_owned(),
+                        config_hash,
+                        plan_hash: hash(&serde_json::to_vec(&plan).unwrap_or_default()),
+                        exit_code: 1,
+                        plan: Some(plan),
+                        error: Some(error),
+                    };
+                }
+            }
+        }
+        let (exit_code, plan, raw, error) = self.plan_mise(&dir, &split, &natives);
+        if split.native.is_empty() {
+            return Plan {
+                config: config.to_owned(),
+                config_hash,
+                plan_hash: hash(&raw),
+                exit_code: if plan.is_none() { 1 } else { exit_code },
+                plan,
+                error,
+            };
+        }
+        let changes = natives.iter().any(|resource| resource["action"] != "noop");
+        let mut plan = plan.unwrap_or_else(|| json!({ "resources": [] }));
+        if !plan["resources"].is_array() {
+            plan["resources"] = json!([]);
+        }
+        if let Some(resources) = plan["resources"].as_array_mut() {
+            resources.splice(0..0, natives);
+        }
+        // A failed mise part does not hold back native changes: they
+        // apply, and the mise items fail alone.
+        let exit_code = match (exit_code, changes) {
+            (_, true) => 2,
+            (0 | 2, false) => exit_code,
+            _ => 1,
+        };
+        Plan {
+            config: config.to_owned(),
+            config_hash,
+            plan_hash: hash(&serde_json::to_vec(&plan).unwrap_or_default()),
+            exit_code,
+            plan: Some(plan),
+            error,
+        }
+    }
+
+    /// Plans what is left for mise. Returns the exit code, the plan, the
+    /// raw output the plan hash covers, and the error.
+    fn plan_mise(
+        &self,
+        dir: &Path,
+        split: &Split,
+        natives: &[Value],
+    ) -> (i32, Option<Value>, Vec<u8>, Option<String>) {
+        let Some(mise) = self.find_mise() else {
+            let installs_mise = split
+                .native
+                .iter()
+                .zip(natives)
+                .any(|(item, resource)| item.name == "mise" && resource["action"] == "create");
+            let (exit_code, action, error) = if split.rest.is_empty() {
+                (0, "noop", None)
+            } else if installs_mise {
+                (2, "create", None)
+            } else {
+                (
+                    1,
+                    "unknown",
+                    Some(format!("{MISE_MISSING}; its items cannot be planned")),
+                )
+            };
+            let plan = json!({
+                "resources": split
+                    .rest
+                    .iter()
+                    .map(|(kind, name)| json!({ "id": { "kind": kind, "name": name }, "action": action }))
+                    .collect::<Vec<_>>(),
+            });
+            let raw = serde_json::to_vec(&plan).unwrap_or_default();
+            return (exit_code, Some(plan), raw, error);
+        };
         let output = match self
-            .command(&dir, std::env::vars_os())
+            .command(dir, std::env::vars_os())
             .args(["bootstrap", "plan", "--json", "--detailed-exitcode"])
             .output()
         {
             Ok(output) => output,
-            Err(error) => return failed(format!("cannot run {}: {error}", self.mise.display())),
+            Err(error) => {
+                return (
+                    1,
+                    None,
+                    Vec::new(),
+                    Some(format!("cannot run {}: {error}", mise.display())),
+                );
+            }
         };
         let exit_code = output.status.code().unwrap_or(1);
         let plan = serde_json::from_slice::<Value>(&output.stdout).ok();
@@ -147,48 +281,70 @@ impl Planner {
         let error = (exit_code != 0 && exit_code != 2 || plan.is_none())
             .then(|| truncate(stderr.trim()))
             .filter(|error| !error.is_empty());
-        Plan {
-            config: config.to_owned(),
-            config_hash,
-            plan_hash: hash(&output.stdout),
-            exit_code: if plan.is_none() { 1 } else { exit_code },
-            plan,
-            error,
-        }
+        (exit_code, plan, output.stdout, error)
     }
 
-    /// Applies the config as last written with `mise bootstrap`. Returns
-    /// mise's exit code and its output.
+    /// Applies the config as last written: its native packages first, then
+    /// the rest with `mise bootstrap`. Returns 0 when both succeeded, and
+    /// their output.
     pub fn apply(&self, config: &str) -> (i32, String) {
         let Some(dir) = self.dir(config) else {
             return (1, format!("unknown config name {config}"));
         };
-        let output = match self
-            .command(&dir, std::env::vars_os())
-            .args(["bootstrap", "--yes", "--only", "packages,tools"])
-            .output()
-        {
-            Ok(output) => output,
-            Err(error) => return (1, format!("cannot run {}: {error}", self.mise.display())),
-        };
-        let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
-        log.push_str(&String::from_utf8_lossy(&output.stderr));
-        if log.len() > LOG_LIMIT {
-            let mut start = log.len() - LOG_LIMIT;
-            while !log.is_char_boundary(start) {
-                start += 1;
+        let split: Split = fs::read(dir.join(SPLIT))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut log = String::new();
+        let mut exit_code = 0;
+        if !split.native.is_empty() {
+            let (code, native_log) = self.native.apply(&split.native);
+            log.push_str(&native_log);
+            if code != 0 {
+                exit_code = code;
             }
-            log = format!("…{}", &log[start..]);
+            if code != 0 && native_log.contains(native::NO_HOMEBREW) {
+                return (exit_code, limit(log));
+            }
         }
-        (output.status.code().unwrap_or(1), log)
+        if split.native.is_empty() || !split.rest.is_empty() {
+            let Some(mise) = self.find_mise() else {
+                log.push_str(&format!("{MISE_MISSING}; its items were not applied\n"));
+                return (1, limit(log));
+            };
+            match self
+                .command(&dir, std::env::vars_os())
+                .args(["bootstrap", "--yes", "--only", "packages,tools"])
+                .output()
+            {
+                Ok(output) => {
+                    log.push_str(&String::from_utf8_lossy(&output.stdout));
+                    log.push_str(&String::from_utf8_lossy(&output.stderr));
+                    let code = output.status.code().unwrap_or(1);
+                    if code != 0 {
+                        exit_code = code;
+                    }
+                }
+                Err(error) => {
+                    log.push_str(&format!("cannot run {}: {error}\n", mise.display()));
+                    exit_code = 1;
+                }
+            }
+        }
+        (exit_code, limit(log))
     }
 
-    fn write(&self, dir: &Path, body: &[u8]) -> io::Result<()> {
+    fn write(&self, dir: &Path, body: &[u8], split: &Split) -> io::Result<()> {
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(0o700);
         builder.create(&self.empty)?;
         builder.create(dir)?;
-        crate::state::write_private(&dir.join("mise.toml"), body)
+        let mise = split.mise.as_deref().map_or(body, str::as_bytes);
+        crate::state::write_private(&dir.join("mise.toml"), mise)?;
+        crate::state::write_private(
+            &dir.join(SPLIT),
+            &serde_json::to_vec(split).unwrap_or_default(),
+        )
     }
 
     /// Removes the directories of configs the controller no longer sends.
@@ -204,6 +360,18 @@ impl Planner {
             }
         }
     }
+}
+
+/// The end of an apply log, at most `LOG_LIMIT` long.
+fn limit(mut log: String) -> String {
+    if log.len() > LOG_LIMIT {
+        let mut start = log.len() - LOG_LIMIT;
+        while !log.is_char_boundary(start) {
+            start += 1;
+        }
+        log = format!("…{}", &log[start..]);
+    }
+    log
 }
 
 fn truncate(text: &str) -> String {

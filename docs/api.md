@@ -428,6 +428,21 @@ It downloads the agent for the machine's OS and architecture from
 - macOS: the launchd daemon `sewa.agent`, as a user the script asks for.
   The default is the user who ran `sudo`.
 
+On macOS, when Homebrew is missing, the script installs it for that user
+before it enrolls, with Homebrew's own non-interactive installer. The
+agent needs brew for the [native packages](#native-packages), and never
+installs Homebrew itself. The script prints each step, and stops with what
+to do when a requirement is missing:
+
+- the Mac must be Apple Silicon;
+- the user must be an admin;
+- the Xcode command line tools must be installed (`xcode-select
+  --install`).
+
+The installer refuses root and asks for sudo itself, so the script lets
+the user run sudo without a password in `/etc/sudoers.d/sewa-homebrew`
+while it runs, and removes that file afterwards, also when it fails.
+
 The script holds every passkey of the moment, with the RP id and origin,
 and pipes them into `sewa-agent pin`, which stores them in
 `<state dir>/approvers.json` with mode 0600. Running the script again pins
@@ -466,8 +481,8 @@ The controller sends `remote_config` only when the hash differs from the
 agent's `remote_config_status.last_remote_config_hash`, so an agent that
 was offline gets the config on its next message.
 
-The agent writes each config to `<state dir>/configs/<current |
-change-<id>>/mise.toml` and runs
+The agent writes the config to `<state dir>/configs/current/mise.toml`,
+without its [native packages](#native-packages), and runs
 `mise -C <dir> bootstrap plan --json --detailed-exitcode`. It applies only
 an approval (see below). mise reads that one file and nothing else:
 
@@ -479,10 +494,45 @@ an approval (see below). mise reads that one file and nothing else:
 | `MISE_CEILING_PATHS` | `<state dir>/configs` | any `mise.toml` above the config |
 | `MISE_TRUSTED_CONFIG_PATHS` | `<state dir>/configs` | the trust prompt |
 
-`--mise` or `SEWA_MISE` names the mise binary. The agent plans a config
+`--mise` or `SEWA_MISE` names the mise binary. When it is a bare name
+that is not in `PATH`, the agent also looks in `/opt/homebrew/bin` and
+`/usr/local/bin`, where Homebrew puts it and launchd's `PATH` does not
+reach. The agent plans a config
 when it is new or its body changed, and plans `current` again every 24
 hours. It reports health with `status` `in_sync` (exit code 0), `drift`
 (2), or `error` (1).
+
+#### Native packages
+
+The agent installs some packages with the OS package manager itself,
+without mise, so a host without mise still gets them:
+
+| OS | Keys | Plan | Apply |
+| --- | --- | --- | --- |
+| macOS | `brew:<name>`, `brew-cask:<name>` | `brew list --formula -1`, `brew list --cask -1` | `brew install [--cask]`, `brew uninstall [--cask]` |
+| Linux | `pacman:<name>` | `pacman -Qq` | `pacman -S --noconfirm --needed`, `pacman -Rns --noconfirm` |
+
+Only keys at `latest` or with `state = "absent"` are native. A pinned
+version, and `aur:` packages, stay with mise. A native item is `create`
+when it is missing, `remove` when it is installed and should be absent,
+and `noop` otherwise. Its resources come first in the plan's `resources`,
+in mise's format, and `plan_hash` covers the whole plan. The agent applies
+them before it runs mise, so the [built-in role](#the-built-in-role) gets
+mise onto a fresh Mac in the same sync that applies the mise items.
+
+When mise is missing:
+
+- if a native item installs `mise`, the mise items are planned as
+  `create`, and mise applies them right after the native step;
+- otherwise the mise items are `unknown`, the plan carries the error
+  `mise is missing; its items cannot be planned`, and they fail alone.
+  When the native items have changes, the plan still exits 2, so they can
+  be synced and applied; the result is `failed` with
+  `mise is missing; its items were not applied` in its log.
+
+When brew is missing on macOS, the native items are `unknown`, the plan
+exits 1 with the error `Homebrew is missing; rerun the install script`,
+and nothing else is planned on top of them.
 
 #### Custom message `io.sewa.plan`
 
@@ -494,7 +544,7 @@ and this JSON as `data`:
 {
   "config": "current",
   "config_hash": "<hex SHA-256 of the config body>",
-  "plan_hash": "<hex SHA-256 of mise's JSON output>",
+  "plan_hash": "<hex SHA-256 of the plan>",
   "exit_code": 2,
   "plan": { "resources": [], "summary": {} },
   "error": null,
@@ -503,7 +553,10 @@ and this JSON as `data`:
 }
 ```
 
-- `plan` is mise's JSON output, or null when mise printed none.
+- `plan` is mise's JSON output, or null when mise printed none. With
+  native packages it is the combined plan, and `plan_hash` is the SHA-256
+  of its compact JSON. Without them, `plan_hash` is the SHA-256 of mise's
+  output as printed.
 - `explicit` comes only with `current`. It lists `pacman -Qqe` on Arch
   Linux, `apt-mark showmanual` on Debian and Ubuntu, or `brew leaves` on
   macOS.
