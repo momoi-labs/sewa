@@ -96,3 +96,34 @@
   }
   .item-table .table .item-manager::before { content: attr(data-label) ": "; }
 }
+
+/* The Plans step of a sync, by package: a search and a host filter above
+   one table per change, in the role page's table style. On a phone each
+   row is a card. See Exceptions in docs/kiso.md. */
+.plan-toolbar { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: start; }
+.plan-search { flex: 1 1 14rem; }
+.plan-host { flex: 0 1 14rem; min-width: 0; }
+.plan-table .table { table-layout: fixed; }
+.plan-col-manager { inline-size: 10rem; }
+.plan-col-version { inline-size: 14rem; }
+.plan-col-hosts { inline-size: 16rem; }
+.plan-table .table td { overflow-wrap: anywhere; }
+.plan-more { font: inherit; min-block-size: 0; max-inline-size: 100%; text-align: start; white-space: normal; }
+.plan-host-list { list-style: none; margin: var(--spacing-xs) 0 0; padding: 0; display: grid; gap: var(--spacing-2xs); max-block-size: 16rem; overflow: auto; font-family: var(--font-mono); }
+
+/* A step's meta, such as "16 plans, 2 in sync, 2 offline", is longer than a
+   phone's row. The row wraps, so the meta goes under the label. */
+.step-row { flex-wrap: wrap; }
+
+@media (max-width: 720px) {
+  .plan-table .table, .plan-table .table tbody { display: block; }
+  .plan-table .table thead, .plan-table colgroup { display: none; }
+  .plan-table .table tbody tr {
+    display: grid; gap: var(--spacing-2xs); padding: var(--spacing-sm) var(--spacing-md);
+    border-block-end: 1px solid var(--color-border);
+  }
+  .plan-table .table tbody tr:last-child { border-block-end: 0; }
+  .plan-table .table tbody td { display: block; padding: 0; border: 0; height: auto; min-width: 0; }
+  .plan-table .table .plan-name { font-weight: var(--type-weight-medium); }
+  .plan-table .table td[data-label]::before { content: attr(data-label) ": "; color: var(--color-muted-foreground); }
+}

@@ -16,7 +16,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, the bar height the sidebar header and the top bar share, and the role item tables (the full-width role form and the phone cards, see Exceptions). `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
+| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, the bar height the sidebar header and the top bar share, the role item tables (the full-width role form and the phone cards, see Exceptions), the sync plan tables, and the wrapping step row. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 
@@ -35,6 +35,7 @@ contract disagree, the contract wins and this file has a bug.
 | `ItemTable` | A role's items as tables, one per source (OS default, Homebrew, Cask, pacman, AUR, mise tools), each in a Disclosure with its count. A Search filters the rows. The add field is a kind Select and a ChipInput with no chips, which keeps the prefix syntax and the suggestions from the other roles. Version (Input) and OS (Select) change in the row. Read-only for the built-in role. |
 | `SaveRoleDialog` | The items a role save adds, changes, and removes, and the button that saves them. |
 | `ItemForm` | Adds a host adjustment: a package or a mise tool with a version. |
+| `PlanByPackage` | The Plans step of a sync by package: Install, Update and Remove tables (Package, Manager, Version or from and to, Hosts), each with its count and hidden when empty. A row merges the hosts that make the same change with the same versions. The Hosts cell says "all (N)", the names, or "build-1, build-2 +6" with a Popover that lists every host. A Search and an "only host" Select narrow the rows. Hosts with no plan to sign go in one line at the end, by reason. |
 | `PlanView` | A mise bootstrap plan as a table, removals first and in danger. |
 | `PasskeyError` | A failed passkey prompt, or an API failure through `ErrorAlert`. |
 | `AddPasskeyDialog` | Names a passkey, then lets the browser create it. |
@@ -61,7 +62,7 @@ contract disagree, the contract wins and this file has a bug.
 | Role (`/roles/$roleId`) | Configuration form in numbered steps (`.form-steps`): Role, then Items in an `ItemTable`. A step with complete fields shows a check. FormActions is sticky and shows unsaved edits. Hosts get roles on the host page, not here. The built-in role shows its items read-only, with one line that sewa manages it, and no FormActions. |
 | Save a role | Confirmations: a dialog with the item diff (added, changed, removed) and "Save". |
 | Sync (`/sync`) | A StepList of the run to come: the edits since the last sync, then the host picker (All, All Linux, All macOS, None), then Plans, Sign and Apply as pending. Recent syncs sit in a table below. |
-| Sync run (`/sync/$syncId`) | A StepList of the run: Pick hosts, Plans, Sign, Apply. A finished step keeps a one-line summary. The hosts' apply steps are a second StepList in their own card, because a StepList nested in a step takes that step's state for every mark. A finished run shows a success or error Alert. |
+| Sync run (`/sync/$syncId`) | A StepList of the run: Pick hosts, Plans, Sign, Apply. The Plans step shows a `PlanByPackage`, not one plan per host. A finished step keeps a one-line summary. The hosts' apply steps are a second StepList in their own card, because a StepList nested in a step takes that step's state for every mark. A finished run shows a success or error Alert. |
 | Passkeys (`/passkeys`) | CRUD: a list, with each passkey created in a dialog. |
 | Sign a sync | The Sign step: the plans above it, then "Sign and sync" with a passkey. A failed host has "Retry", which signs its plan again. |
 | Adopt a package | CRUD: a small edit made in a dialog. |
@@ -95,7 +96,11 @@ contract disagree, the contract wins and this file has a bug.
   table rows on a phone and drops columns, or scrolls sideways. Here every
   column is an input the person edits, so none can go, and the user asked
   for no sideways scroll at 390 px. The cards keep the table markup, so the
-  column names stay in the accessibility tree.
+  column names stay in the accessibility tree. The sync plan tables use
+  the same cards, with a "Hosts" label, so 20 hosts and long names fit.
+- A StepList row wraps (`.step-row`), so a long step meta such as "16
+  plans, 2 in sync, 2 offline, 1 failed" goes under the label on a phone.
+  Kiso keeps `.step-meta` on one line, which scrolled the page sideways.
 
 ## Verify
 

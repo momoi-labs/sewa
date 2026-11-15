@@ -30,9 +30,9 @@ import { getRouteApi, Link } from '@tanstack/react-router';
 import { approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
 import { ErrorAlert, errorCode } from '../components/ErrorAlert';
 import { PasskeyError } from '../components/PasskeyError';
-import { PlanView, summarize } from '../desired/PlanView';
 import { formatClock, formatDateTime } from '../format';
 import { signApproval } from '../webauthn';
+import { PlanByPackage } from './PlanByPackage';
 import { finishedAt, planState, plural, tally } from './sync';
 
 const route = getRouteApi('/sync/$syncId');
@@ -127,7 +127,7 @@ function Run({ sync }: { sync: Sync }) {
       ]
         .filter(Boolean)
         .join(', '),
-      detail: signed || nothing ? undefined : <Plans hosts={sync.hosts} />,
+      detail: signed || nothing ? undefined : <PlanByPackage hosts={sync.hosts} />,
     },
     {
       key: 'sign',
@@ -250,32 +250,6 @@ function Finished({ sync, nothing }: { sync: Sync; nothing: boolean }) {
         </AlertDescription>
       </AlertContent>
     </Alert>
-  );
-}
-
-const planTexts = {
-  planning: 'Waiting for its plan',
-  offline: 'Offline: no plan',
-  failed: 'The plan failed',
-  in_sync: 'In sync',
-};
-
-function Plans({ hosts }: { hosts: SyncHost[] }) {
-  return (
-    <div className="stack-sm">
-      {hosts.map((host) => {
-        const state = planState(host);
-        const text = state === 'changes' ? summarize(host.plan?.plan?.resources ?? []) : planTexts[state];
-        return (
-          <Disclosure key={host.id} summary={`${host.name}: ${text}`}>
-            <PlanView
-              plan={host.plan}
-              waiting={host.status === 'connected' ? 'The agent plans its config soon.' : 'The agent is offline.'}
-            />
-          </Disclosure>
-        );
-      })}
-    </div>
   );
 }
 
