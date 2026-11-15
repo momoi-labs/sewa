@@ -16,7 +16,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, and the host picker rows. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
+| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, and the chip remove button exception below. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 
@@ -86,6 +86,12 @@ contract disagree, the contract wins and this file has a bug.
   `alert` region. The illustrations are the brand's files in
   `web/public/`, not Kiso tokens. Kiso has no illustration size token, so the
   height is `--spacing-4xl` times 3.
+- A chip in a ChipInput keeps its remove button in view. Kiso 1.9 lets a
+  chip wider than its field scroll sideways, so on a phone a long package
+  chip such as `brew-cask:ghostty` with an `os` option hid its X past the
+  field's edge. `product.css` makes the remove button sticky at the chip's
+  end edge, on the chip's own fill. Kiso should keep a chip's remove button
+  visible.
 
 ## Verify
 
