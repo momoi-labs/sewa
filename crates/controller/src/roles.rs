@@ -233,9 +233,8 @@ pub fn diff(before: &BTreeMap<Key, Spec>, after: &BTreeMap<Key, Spec>) -> Diff {
 
 /// `PUT /api/roles/{id}`: replaces the role's name and items, and records
 /// `role.saved` with what changed. 400 `invalid_name`, `invalid_item`,
-/// `duplicate_item`, `too_many_items`, or `bootstrap_packages_only` (the
-/// built-in role holds packages only); 409 `name_taken` or `builtin_role`
-/// (renaming the built-in role); 404 `not_found`.
+/// `duplicate_item`, or `too_many_items`; 409 `name_taken` or `builtin_role`
+/// (sewa manages the built-in role, so no save changes it); 404 `not_found`.
 pub async fn save(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -269,14 +268,8 @@ pub async fn save(
             .fetch_optional(&mut *transaction)
             .await?;
     let (name, builtin) = row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
-    if builtin && saved.name != name {
+    if builtin {
         return Err(Failure::new(StatusCode::CONFLICT, "builtin_role"));
-    }
-    if builtin && saved.items.iter().any(|item| item.kind != Kind::Package) {
-        return Err(Failure::new(
-            StatusCode::BAD_REQUEST,
-            "bootstrap_packages_only",
-        ));
     }
     if saved.name != name {
         let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM roles WHERE name = $1)")
@@ -349,6 +342,19 @@ pub async fn save(
         .ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
     transaction.commit().await?;
     Ok(Json(role))
+}
+
+/// 409 `builtin_role` when `id` is the built-in role, which sewa manages.
+pub async fn writable(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<()> {
+    let builtin: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM roles WHERE id = $1 AND builtin)")
+            .bind(id)
+            .fetch_one(connection)
+            .await?;
+    if builtin {
+        return Err(Failure::new(StatusCode::CONFLICT, "builtin_role"));
+    }
+    Ok(())
 }
 
 /// The role ids a list names, without the built-in role, or 400

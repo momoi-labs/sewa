@@ -580,36 +580,31 @@ async fn the_bootstrap_role_is_built_in(pool: PgPool) {
         json!([{ "kind": "package", "name": "mise", "version": "latest", "os": null }])
     );
     let id = bootstrap["id"].as_str().unwrap();
-    let (status, body) = save_role(&app, id, json!({ "name": "base", "items": [] })).await;
-    assert_eq!(
-        (status, body),
-        (StatusCode::CONFLICT, json!({ "error": "builtin_role" }))
-    );
-    let (status, body) = save_role(
-        &app,
-        id,
-        json!({ "name": "bootstrap", "items": [{ "kind": "tool", "name": "node", "version": "24" }] }),
-    )
-    .await;
-    assert_eq!(
-        (status, body),
-        (
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "bootstrap_packages_only" })
-        )
-    );
-    // Admins add packages to it, and every host gets them with the OS's
-    // package manager.
-    let (status, _) = save_role(
-        &app,
-        id,
+    // sewa manages it: every save is refused, even one that changes nothing,
+    // and the items stay as they were.
+    for saved in [
+        json!({ "name": "base", "items": [] }),
+        json!({ "name": "bootstrap", "items": [] }),
+        json!({ "name": "bootstrap", "items": [
+            { "kind": "package", "name": "mise", "version": "2026.1.0" }
+        ] }),
         json!({ "name": "bootstrap", "items": [
             { "kind": "package", "name": "mise", "version": "latest" },
             { "kind": "package", "name": "git", "version": "latest" }
         ] }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+        json!({ "name": "bootstrap", "items": [
+            { "kind": "package", "name": "mise", "version": "latest" }
+        ] }),
+    ] {
+        let (status, body) = save_role(&app, id, saved).await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::CONFLICT, json!({ "error": "builtin_role" }))
+        );
+    }
+    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
+    assert_eq!(roles[0]["items"], bootstrap["items"]);
+    // Every host gets it with the OS's package manager.
     let (linux, _) = create_host(&app, "build-1").await;
     let (status, created) = json_call(
         &app,
@@ -626,12 +621,25 @@ async fn the_bootstrap_role_is_built_in(pool: PgPool) {
         .unwrap()
         .to_owned();
     assert!(config.contains("\"pacman:mise\" = \"latest\""), "{config}");
-    assert!(config.contains("\"pacman:git\" = \"latest\""), "{config}");
     let config = host_state(&app, mac).await["config"]
         .as_str()
         .unwrap()
         .to_owned();
     assert!(config.contains("\"brew:mise\" = \"latest\""), "{config}");
+
+    // Adopting a package into it is refused too.
+    let (status, body) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/hosts/{linux}/drift/adopt"),
+        Some(json!({ "package": "git", "role": id })),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "builtin_role" }))
+    );
 
     // A host cannot drop or add the built-in role: it always has it.
     let (status, body) = host_edits(
