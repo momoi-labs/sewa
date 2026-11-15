@@ -726,6 +726,31 @@ async fn hosts_get_roles_and_items_for_their_os(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn the_host_list_has_each_hosts_roles_without_the_built_in_one(pool: PgPool) {
+    let app = app(pool);
+    let (first, _) = create_host(&app, "build-1").await;
+    let (_second, _) = create_host(&app, "build-2").await;
+    let web = create_role(&app, "web").await;
+    let db = create_role(&app, "db").await;
+    let (status, body) = host_edits(
+        &app,
+        &first,
+        json!([{ "op": "host_role_add", "role": web }, { "op": "host_role_add", "role": db }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, hosts) = json_call(&app, ADMIN, "GET", "/api/hosts", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        hosts[0]["roles"],
+        json!([{ "id": db, "name": "db" }, { "id": web, "name": "web" }])
+    );
+    assert_eq!(hosts[1]["roles"], json!([]));
+    assert_eq!(hosts[0]["name"], "build-1");
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
 async fn the_agent_gets_its_config_and_reports_plans(pool: PgPool) {
     let app = app(pool.clone());
     let (host, token) = create_host(&app, "build-1").await;

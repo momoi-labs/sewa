@@ -76,7 +76,9 @@ Response `201`:
 
 ### `GET /api/hosts`
 
-Lists hosts by name. `status` is:
+Lists hosts by name. Each host also has `roles`, a list of `{ "id", "name" }`
+by role name. It leaves out the built-in role, which every host has.
+`status` is:
 
 - `waiting`: the host never enrolled.
 - `connected`: the agent reported in the last 90 seconds.
@@ -90,7 +92,8 @@ Lists hosts by name. `status` is:
 
 ### `GET /api/hosts/{id}`
 
-Returns one host, in the same shape as an item of `GET /api/hosts`.
+Returns one host, in the same shape as an item of `GET /api/hosts`, without
+`roles`.
 
 ### `GET /api/hosts/{id}/events`
 

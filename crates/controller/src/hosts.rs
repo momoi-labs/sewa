@@ -239,13 +239,46 @@ fn host(row: Row, now: DateTime<Utc>) -> Host {
     }
 }
 
-/// `GET /api/hosts`: every host by name, with its status.
-pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Host>>> {
+/// A host in the list, with the roles it has besides the built-in one.
+#[derive(Debug, Serialize)]
+pub struct Listed {
+    #[serde(flatten)]
+    pub host: Host,
+    pub roles: Vec<roles::Named>,
+}
+
+/// `GET /api/hosts`: every host by name, with its status and its roles.
+/// The built-in role is left out: every host has it.
+pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Listed>>> {
     let rows: Vec<Row> = sqlx::query_as(select_hosts!("ORDER BY name"))
         .fetch_all(&state.pool)
         .await?;
+    let pairs: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT host_roles.host_id, roles.id, roles.name
+         FROM host_roles JOIN roles ON roles.id = host_roles.role_id
+         WHERE NOT roles.builtin
+         ORDER BY roles.name",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut roles_of: std::collections::HashMap<Uuid, Vec<roles::Named>> =
+        std::collections::HashMap::new();
+    for (host, id, name) in pairs {
+        roles_of
+            .entry(host)
+            .or_default()
+            .push(roles::Named { id, name });
+    }
     let now = Utc::now();
-    Ok(Json(rows.into_iter().map(|row| host(row, now)).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                let host = host(row, now);
+                let roles = roles_of.remove(&host.id).unwrap_or_default();
+                Listed { host, roles }
+            })
+            .collect(),
+    ))
 }
 
 /// The host id of a path. One that is not a UUID names no host.
