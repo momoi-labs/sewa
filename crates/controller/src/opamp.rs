@@ -5,7 +5,7 @@
 //! description and when it last heard from it. Adapted from pg-yard's
 //! `crates/cell/src/opamp.rs`.
 //!
-//! The controller sends each host its mise bootstrap configs as
+//! The controller sends each host its desired config, `current`, as
 //! `remote_config`, and the agent sends each plan back as a custom message
 //! of the `io.sewa.plan` capability. Approvals go to the agent, and what
 //! it did with them comes back, as custom messages of the
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::enroll::{authenticate, bearer};
 use crate::error::ApiResult;
-use crate::{AppState, approvals, desired, events, status};
+use crate::{AppState, desired, events, status, syncs};
 use proto::any_value::Value;
 use proto::{
     AgentConfigMap, AgentConfigObject, AgentDescription, AgentRemoteConfig, AgentToServer,
@@ -40,7 +40,7 @@ pub const CONFIG_CONTENT_TYPE: &str = "application/toml";
 /// One plan, as the agent sends it in a custom message.
 #[derive(Debug, serde::Deserialize)]
 pub struct PlanReport {
-    /// `current` or `change/<id>`.
+    /// The config the agent planned: `current`.
     pub config: String,
     /// The hex SHA-256 of the config the agent planned.
     pub config_hash: String,
@@ -146,13 +146,13 @@ pub async fn exchange(
         && custom.r#type == sewa_approval::RESULT_TYPE
     {
         match serde_json::from_slice::<sewa_approval::Outcome>(&custom.data) {
-            Ok(outcome) => approvals::save_outcome(&state.pool, host, &outcome).await?,
+            Ok(outcome) => syncs::save_outcome(&state.pool, host, &outcome).await?,
             Err(error) => tracing::warn!(host = %host, %error, "cannot read an apply result"),
         }
     }
     // The oldest approval the host has not reported on, on every answer
     // until it does.
-    let approval = approvals::pending(&state.pool, host).await?;
+    let approval = syncs::pending(&state.pool, host).await?;
     let remote_config = remote_config(&state.pool, host).await?;
     let known_hash = message
         .remote_config_status
@@ -193,8 +193,11 @@ pub async fn exchange(
 /// The configs of a host, as OpAMP's `remote_config`.
 async fn remote_config(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<AgentRemoteConfig> {
     let mut connection = pool.acquire().await?;
-    let (approved, proposed) = desired::states(&mut connection).await?;
-    let configs = desired::host_configs(host, &approved, proposed.as_ref());
+    let state = desired::State::load(&mut connection).await?;
+    let configs = std::collections::BTreeMap::from([(
+        desired::CURRENT.to_owned(),
+        desired::host_config(host, &state),
+    )]);
     Ok(AgentRemoteConfig {
         config_hash: desired::configs_hash(&configs),
         config: Some(AgentConfigMap {
@@ -215,36 +218,16 @@ async fn remote_config(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<AgentRem
     })
 }
 
-/// Keeps the last plan of each config. A plan of `current` also updates
+/// Keeps the last plan of `current`. It also updates
 /// the host's explicit packages, and records `drift.detected` when it shows
 /// a drift other than the last one recorded.
 async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx::Result<()> {
-    let change = if report.config == desired::CURRENT {
-        None
-    } else {
-        match report
-            .config
-            .strip_prefix("change/")
-            .and_then(|id| id.parse::<Uuid>().ok())
-        {
-            Some(change) => Some(change),
-            None => {
-                tracing::warn!(host = %host, config = report.config, "a plan of an unknown config");
-                return Ok(());
-            }
-        }
-    };
-    let mut transaction = pool.begin().await?;
-    if let Some(change) = change {
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM changes WHERE id = $1)")
-                .bind(change)
-                .fetch_one(&mut *transaction)
-                .await?;
-        if !exists {
-            return Ok(());
-        }
+    if report.config != desired::CURRENT {
+        // An agent from before syncs may still plan a change's config.
+        tracing::debug!(host = %host, config = report.config, "a plan of an unknown config");
+        return Ok(());
     }
+    let mut transaction = pool.begin().await?;
     let text = |value: &str| value.replace('\0', "");
     let received = Utc::now();
     let reported = status::reported_at(report.at, received);
@@ -261,16 +244,15 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
     }
     sqlx::query(
         "INSERT INTO host_plans
-             (host_id, config, change_id, config_hash, plan_hash, exit_code, plan, error,
+             (host_id, config, config_hash, plan_hash, exit_code, plan, error,
               reported_at, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (host_id, config) DO UPDATE SET
-             change_id = $3, config_hash = $4, plan_hash = $5, exit_code = $6,
-             plan = $7, error = $8, reported_at = $9, received_at = $10",
+             config_hash = $3, plan_hash = $4, exit_code = $5,
+             plan = $6, error = $7, reported_at = $8, received_at = $9",
     )
     .bind(host)
     .bind(&report.config)
-    .bind(change)
     .bind(text(&report.config_hash))
     .bind(text(&report.plan_hash))
     .bind(report.exit_code)
@@ -280,70 +262,67 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
     .bind(received)
     .execute(&mut *transaction)
     .await?;
-    if change.is_none() {
-        if let Some(explicit) = &report.explicit {
-            let packages: Vec<String> = explicit.packages.iter().map(|p| text(p)).collect();
-            sqlx::query(
-                "UPDATE hosts SET explicit_manager = $2, explicit_packages = $3,
-                     explicit_reported_at = $4
-                 WHERE id = $1",
-            )
-            .bind(host)
-            .bind(text(&explicit.manager))
-            .bind(packages)
-            .bind(reported)
-            .execute(&mut *transaction)
-            .await?;
-        }
-        match report.exit_code {
-            2 => {
-                let last: Option<String> = sqlx::query_scalar(
-                    "SELECT drift_plan_hash FROM hosts WHERE id = $1 FOR UPDATE",
-                )
-                .bind(host)
-                .fetch_one(&mut *transaction)
-                .await?;
-                if last.as_deref() != Some(report.plan_hash.as_str()) {
-                    sqlx::query("UPDATE hosts SET drift_plan_hash = $2 WHERE id = $1")
-                        .bind(host)
-                        .bind(text(&report.plan_hash))
-                        .execute(&mut *transaction)
-                        .await?;
-                    let summary = report
-                        .plan
-                        .as_ref()
-                        .and_then(|plan| plan.get("summary").cloned())
-                        .unwrap_or_default();
-                    let mut data = serde_json::json!({
-                        "config_hash": report.config_hash,
-                        "plan_hash": report.plan_hash,
-                        "summary": summary,
-                    });
-                    if let Some(late) = status::late(reported, received) {
-                        data["received_at"] = serde_json::json!(late);
-                    }
-                    events::record_at(
-                        &mut transaction,
-                        events::About {
-                            host: Some(host),
-                            ..Default::default()
-                        },
-                        events::DRIFT_DETECTED,
-                        data,
-                        reported,
-                    )
-                    .await?;
-                }
-            }
-            0 => {
-                sqlx::query("UPDATE hosts SET drift_plan_hash = NULL WHERE id = $1")
+    if let Some(explicit) = &report.explicit {
+        let packages: Vec<String> = explicit.packages.iter().map(|p| text(p)).collect();
+        sqlx::query(
+            "UPDATE hosts SET explicit_manager = $2, explicit_packages = $3,
+                 explicit_reported_at = $4
+             WHERE id = $1",
+        )
+        .bind(host)
+        .bind(text(&explicit.manager))
+        .bind(packages)
+        .bind(reported)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    match report.exit_code {
+        2 => {
+            let last: Option<String> =
+                sqlx::query_scalar("SELECT drift_plan_hash FROM hosts WHERE id = $1 FOR UPDATE")
                     .bind(host)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            if last.as_deref() != Some(report.plan_hash.as_str()) {
+                sqlx::query("UPDATE hosts SET drift_plan_hash = $2 WHERE id = $1")
+                    .bind(host)
+                    .bind(text(&report.plan_hash))
                     .execute(&mut *transaction)
                     .await?;
+                let summary = report
+                    .plan
+                    .as_ref()
+                    .and_then(|plan| plan.get("summary").cloned())
+                    .unwrap_or_default();
+                let mut data = serde_json::json!({
+                    "config_hash": report.config_hash,
+                    "plan_hash": report.plan_hash,
+                    "summary": summary,
+                });
+                if let Some(late) = status::late(reported, received) {
+                    data["received_at"] = serde_json::json!(late);
+                }
+                events::record_at(
+                    &mut transaction,
+                    events::About {
+                        host: Some(host),
+                        ..Default::default()
+                    },
+                    events::DRIFT_DETECTED,
+                    data,
+                    reported,
+                )
+                .await?;
             }
-            // An error or an unknown state says nothing about drift.
-            _ => {}
         }
+        0 => {
+            sqlx::query("UPDATE hosts SET drift_plan_hash = NULL WHERE id = $1")
+                .bind(host)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        // An error or an unknown state says nothing about drift.
+        _ => {}
     }
     transaction.commit().await
 }

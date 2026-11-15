@@ -11,18 +11,19 @@ pub const HOST_CONNECTED: &str = "host.connected";
 pub const HOST_DISCONNECTED: &str = "host.disconnected";
 pub const HOST_OFFLINE: &str = "host.offline";
 pub const ROLE_CREATED: &str = "role.created";
-pub const CHANGE_CREATED: &str = "change.created";
-pub const CHANGE_EDITED: &str = "change.edited";
-pub const CHANGE_DISCARDED: &str = "change.discarded";
 pub const DRIFT_DETECTED: &str = "drift.detected";
 pub const PASSKEY_REGISTERED: &str = "passkey.registered";
-pub const CHANGE_APPROVED: &str = "change.approved";
 pub const PLAN_APPLIED: &str = "plan.applied";
 pub const APPLY_FAILED: &str = "apply.failed";
 pub const APPLY_REPLAN: &str = "apply.replan";
 pub const DRIFT_REVERTED: &str = "drift.reverted";
 pub const DRIFT_ADOPTED: &str = "drift.adopted";
 pub const DRIFT_IGNORED: &str = "drift.ignored";
+pub const ROLE_SAVED: &str = "role.saved";
+pub const HOST_ROLES_SET: &str = "host.roles_set";
+pub const HOST_ITEMS_SET: &str = "host.items_set";
+pub const SYNC_CREATED: &str = "sync.created";
+pub const SYNC_APPROVED: &str = "sync.approved";
 
 /// Appends one event, in the caller's transaction.
 pub async fn record(
@@ -40,7 +41,7 @@ pub async fn record(
     Ok(())
 }
 
-/// Appends one event about a change or a role, which may name a host.
+/// Appends one event about a sync or a role, which may name a host.
 pub async fn record_about(
     connection: &mut PgConnection,
     about: About,
@@ -48,10 +49,10 @@ pub async fn record_about(
     data: Value,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO events (host_id, change_id, role_id, kind, data) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO events (host_id, sync_id, role_id, kind, data) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(about.host)
-    .bind(about.change)
+    .bind(about.sync)
     .bind(about.role)
     .bind(kind)
     .bind(data)
@@ -70,11 +71,11 @@ pub async fn record_at(
     at: DateTime<Utc>,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO events (host_id, change_id, role_id, kind, data, at)
+        "INSERT INTO events (host_id, sync_id, role_id, kind, data, at)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(about.host)
-    .bind(about.change)
+    .bind(about.sync)
     .bind(about.role)
     .bind(kind)
     .bind(data)
@@ -88,6 +89,6 @@ pub async fn record_at(
 #[derive(Debug, Default, Clone, Copy)]
 pub struct About {
     pub host: Option<Uuid>,
-    pub change: Option<Uuid>,
+    pub sync: Option<Uuid>,
     pub role: Option<Uuid>,
 }

@@ -78,6 +78,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("cannot connect to the database")?;
     MIGRATOR.run(&pool).await.context("cannot migrate")?;
+    sewa_controller::desired::ensure_bootstrap(&pool)
+        .await
+        .context("cannot set up the bootstrap role")?;
     tokio::spawn(status::run_sweeper(pool.clone()));
     let state = AppState {
         pool,
