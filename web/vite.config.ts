@@ -10,6 +10,11 @@ const controller = {
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // The error page shows when the controller is down, so the assets it
+    // draws, such as Kiso's hatch pattern, are inlined, not fetched.
+    assetsInlineLimit: 8 * 1024,
+  },
   server: {
     proxy: {
       '/api': controller,

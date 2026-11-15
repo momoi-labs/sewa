@@ -53,8 +53,9 @@ background.
 - `web/public/favicon.svg` is the same emblem in a square viewBox. The
   ivory halo appears when the system uses a dark theme.
 - `ErrorPage` shows `error-403`, `error-500`, or `error-offline` above the status code, a
-  title, one line, and one action. The app loads copies from `web/public/`.
-  Keep them the same as the files here. Both variants load, and
+  title, one line, and one action. The app inlines copies from
+  `web/src/components/error-art/` into its bundle, so the art shows when the
+  controller is down. Keep them the same as the files here. Both variants load, and
   `ErrorPage.css` shows the one for the app's theme.
 
 ## Use
@@ -77,8 +78,9 @@ background.
 
 ## Error illustrations
 
-- Use `error-403` when access is denied, `error-500` for a 5xx, and
-  `error-offline` when the controller does not answer. Do not use them for a 404 or an empty list.
+- Use `error-403` for a 403, `error-500` for a 5xx, and `error-offline` for
+  any other error, such as no answer or a 404. Do not use them for an empty
+  list.
 - Use one per page, 160 to 240 px high, centered above the copy. Do not use
   them as icons or below 120 px: the small parts stop reading.
 - Put the code, title, and text in the page, never in the art. The files have

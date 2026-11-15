@@ -84,7 +84,7 @@ contract disagree, the contract wins and this file has a bug.
   illustrated page when the whole screen cannot load. The page keeps Kiso's
   copy order (what, why, now), uses no danger color, and the 5xx page is an
   `alert` region. The illustrations are the brand's files in
-  `web/public/`, not Kiso tokens. Kiso has no illustration size token, so the
+  `web/src/components/error-art/`, inlined in the bundle, not Kiso tokens. Kiso has no illustration size token, so the
   height is `--spacing-4xl` times 3.
 - A chip in a ChipInput keeps its remove button in view. Kiso 1.9 lets a
   chip wider than its field scroll sideways, so on a phone a long package
