@@ -298,6 +298,9 @@ describe('sync', () => {
     expect(await screen.findByText(/Sync finished with failures/)).toBeInTheDocument();
     expect(screen.getByText('1 host applied, 1 failed, 1 skipped.', { exact: false })).toBeInTheDocument();
     expect(screen.getByText('error: target not found: jq')).toBeInTheDocument();
+    // The retry signs the host's current plan, so it shows first.
+    const install = screen.getByRole('table', { name: 'Install (1)' });
+    expect(within(install).getByText('jq')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry build-2' }));
     await waitFor(() =>
       expect(calls.find((call) => call.path.endsWith('/approval'))?.body).toEqual({
