@@ -55,7 +55,7 @@ describe('hosts', () => {
   it('shows the 403 page to a person who is not an admin', async () => {
     mockApi({ 'GET /api/hosts': { status: 403, body: { error: 'not_admin' } } });
     renderRoute('/');
-    expect(await screen.findByRole('heading', { name: 'The guardian said no' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Access denied' })).toBeInTheDocument();
     expect(screen.getByText('Error 403')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
   });
@@ -68,6 +68,16 @@ describe('hosts', () => {
     expect(screen.getByText('Error 500')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(calls.filter((c) => c.path === '/api/hosts').length).toBeGreaterThan(1);
+  });
+
+  it('shows the no-answer page when the controller does not answer', async () => {
+    mockApi({});
+    globalThis.fetch = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch;
+    renderRoute('/');
+    expect(await screen.findByRole('heading', { name: 'The controller did not answer' })).toBeInTheDocument();
+    expect(screen.getByText('No answer')).toBeInTheDocument();
+    const art = document.querySelector('img.error-page-art');
+    expect(art).toHaveAttribute('src', '/error-offline.svg');
   });
 
   it('creates a host and shows its install command once', async () => {
