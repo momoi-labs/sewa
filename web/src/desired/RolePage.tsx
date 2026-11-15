@@ -22,17 +22,17 @@ import { type FormEvent, type ReactNode, useState } from 'react';
 
 import { type Item, type Role, roleQuery, rolesQuery } from '../api';
 import { ErrorAlert, errorCode } from '../components/ErrorAlert';
-import { ItemChips } from './ItemChips';
 import { diffItems, diffSize, itemProblem } from './items';
+import { ItemTable } from './ItemTable';
 import { SaveRoleDialog } from './SaveRoleDialog';
 
 const route = getRouteApi('/roles/$roleId');
 
 const NAME = /^[A-Za-z0-9._-]{1,63}$/;
 
-/** One role, edited in numbered steps: its name, its packages, and its mise
- *  tools. Save shows what changes and asks to confirm. Hosts get roles on
- *  the host page. */
+/** One role, edited in numbered steps: its name, then its items. Save shows
+ *  what changes and asks to confirm. Hosts get roles on the host page. The
+ *  built-in role is read-only. */
 export function RolePage() {
   const { roleId } = route.useParams();
   const role = useQuery(roleQuery(roleId));
@@ -63,12 +63,18 @@ export function RolePage() {
             </div>
             <PageHeaderDescription>
               {role.data?.builtin
-                ? 'What sewa needs on every host. It holds packages only.'
+                ? 'What sewa needs on every host.'
                 : 'Packages and mise tools for the hosts with this role. Give it to a host on the host page.'}
             </PageHeaderDescription>
           </PageHeader>
-          <Card className="form-page">
-            {role.data ? <RoleForm key={role.data.id} role={role.data} /> : <Skeleton />}
+          <Card className="form-page role-form">
+            {!role.data ? (
+              <Skeleton />
+            ) : role.data.builtin ? (
+              <BuiltinRole role={role.data} />
+            ) : (
+              <RoleForm key={role.data.id} role={role.data} />
+            )}
           </Card>
         </>
       )}
@@ -86,16 +92,24 @@ function namesOf(roles: Role[] | undefined, self: string, kind: Item['kind']): s
   return [...names].sort();
 }
 
+/** The built-in role's items, with no edit controls: sewa manages it. */
+function BuiltinRole({ role }: { role: Role }) {
+  return (
+    <div className="form-body">
+      <p>sewa manages this role, so it is read-only. Put your own packages in another role.</p>
+      <ItemTable value={role.items} readOnly />
+    </div>
+  );
+}
+
 function RoleForm({ role }: { role: Role }) {
   const roles = useQuery(rolesQuery);
   const [saved, setSaved] = useState(role);
   const [name, setName] = useState(role.name);
-  const [packages, setPackages] = useState(role.items.filter((item) => item.kind === 'package'));
-  const [tools, setTools] = useState(role.items.filter((item) => item.kind === 'tool'));
+  const [items, setItems] = useState(role.items);
   const [confirming, setConfirming] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
 
-  const items = [...packages, ...tools];
   const diff = diffItems(saved.items, items);
   const renamed = name.trim() !== saved.name;
   const dirty = renamed || diffSize(diff) > 0;
@@ -110,8 +124,7 @@ function RoleForm({ role }: { role: Role }) {
 
   function discard() {
     setName(saved.name);
-    setPackages(saved.items.filter((item) => item.kind === 'package'));
-    setTools(saved.items.filter((item) => item.kind === 'tool'));
+    setItems(saved.items);
     setFailure(null);
   }
 
@@ -142,8 +155,7 @@ function RoleForm({ role }: { role: Role }) {
               label="Name"
               autoComplete="off"
               value={name}
-              disabled={role.builtin}
-              hint={role.builtin ? 'The built-in role keeps its name.' : 'Letters, digits, dots, dashes or underscores.'}
+              hint="Letters, digits, dots, dashes or underscores."
               onChange={(event) => {
                 setName(event.target.value);
                 if (errorCode(failure) === 'name_taken') setFailure(null);
@@ -151,46 +163,17 @@ function RoleForm({ role }: { role: Role }) {
               error={nameProblem}
             />
           </li>
-          <li data-done={packages.length > 0 || undefined}>
-            <p className="t-caps">Packages</p>
-            <ItemChips
-              id="role-packages"
-              kind="package"
-              label="Packages"
-              placeholder="jq, brew:jq, pacman:htop…"
-              hint={
-                <>
-                  A package without a prefix goes to the host's package manager: pacman on Linux, Homebrew on macOS.
-                  Prefix it with <code>brew:</code>, <code>brew-cask:</code>, <code>pacman:</code> or <code>aur:</code>{' '}
-                  to pick one. Press a version to change it: <code>latest</code>, a version, or <code>absent</code>.
-                  Press <code>+</code> and type <code>os=linux</code> or <code>os=macos</code> for one OS only.
-                </>
-              }
-              value={packages}
-              onChange={setPackages}
-              suggestions={namesOf(roles.data, role.id, 'package')}
+          <li data-done={items.length > 0 || undefined}>
+            <p className="t-caps">Items</p>
+            <ItemTable
+              value={items}
+              onChange={setItems}
+              suggestions={{
+                package: namesOf(roles.data, role.id, 'package'),
+                tool: namesOf(roles.data, role.id, 'tool'),
+              }}
             />
           </li>
-          {!role.builtin && (
-            <li data-done={tools.length > 0 || undefined}>
-              <p className="t-caps">mise tools</p>
-              <ItemChips
-                id="role-tools"
-                kind="tool"
-                label="mise tools"
-                placeholder="node, python, npm:prettier…"
-                hint={
-                  <>
-                    Type a mise tool, or pick one that another role uses. Press a version to change it. Press{' '}
-                    <code>+</code> and type <code>os=linux</code> or <code>os=macos</code> for one OS only.
-                  </>
-                }
-                value={tools}
-                onChange={setTools}
-                suggestions={namesOf(roles.data, role.id, 'tool')}
-              />
-            </li>
-          )}
         </ol>
       </div>
       <FormActions sticky tone={dirty ? 'warning' : 'neutral'} message={message}>
@@ -213,8 +196,7 @@ function RoleForm({ role }: { role: Role }) {
         onSaved={(next) => {
           setSaved(next);
           setName(next.name);
-          setPackages(next.items.filter((item) => item.kind === 'package'));
-          setTools(next.items.filter((item) => item.kind === 'tool'));
+          setItems(next.items);
           setFailure(null);
         }}
         onFailed={setFailure}
