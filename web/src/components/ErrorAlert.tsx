@@ -96,6 +96,10 @@ const messages: Record<string, { title: string; body: string }> = {
     title: 'A plan changed while you signed',
     body: 'Check the new plans, then sign again.',
   },
+  stale_plans: {
+    title: 'The plans changed',
+    body: 'The controller has newer plans than this page shows, so nothing was signed. Reload the page, check the plans, then sign again.',
+  },
   invalid_assertion: {
     title: 'The controller refused the signature',
     body: 'Use one of your own passkeys, then try again.',

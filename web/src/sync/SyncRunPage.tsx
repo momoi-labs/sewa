@@ -28,14 +28,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
 import { useState } from 'react';
 
-import { approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
+import { ApiFailure, approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
 import { ErrorAlert, errorCode } from '../components/ErrorAlert';
 import { PasskeyError } from '../components/PasskeyError';
 import { formatClock, formatDateTime } from '../format';
 import { signApproval } from '../webauthn';
 import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
-import { finishedAt, planState, plural, tally } from './sync';
+import { finishedAt, planState, plural, sameTargets, tally } from './sync';
 
 const route = getRouteApi('/sync/$syncId');
 
@@ -86,6 +86,8 @@ function useSign(sync: Sync) {
   return useMutation({
     mutationFn: async (hosts?: string[]) => {
       const options = await syncApprovalOptions(sync.id, hosts);
+      // Sign only the plans the user reviewed.
+      if (!sameTargets(sync, options.hosts, hosts)) throw new ApiFailure(409, 'stale_plans');
       return approveSync(sync.id, await signApproval(options), hosts);
     },
     onSuccess: async (next) => {
