@@ -16,7 +16,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, the bar height the sidebar header and the top bar share, the role item tables (the full-width role form and the phone cards, see Exceptions), the sync plan tables, and the wrapping step row. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
+| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker rows, the bar height and bottom line the sidebar header and the top bar share, the gap above the first nav item, the role item tables (the full-width role form and the phone cards, see Exceptions), the sync plan tables, and the wrapping step row. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 

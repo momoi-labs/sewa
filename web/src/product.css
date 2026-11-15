@@ -16,6 +16,10 @@
   box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
 }
 .sidebar-header { align-content: center; }
+/* A line under the brand, like the top bar's, and the nav items' own gap
+   above the first item, so it does not touch the line. */
+.sidebar-header { border-block-end: 1px solid var(--color-border); }
+.sidebar-body { padding-block-start: var(--spacing-2xs); }
 .brand-slot { gap: var(--spacing-sm); color: var(--color-foreground); text-decoration: none; }
 .brand-slot .sewa-mark { height: var(--size-control-lg); }
 .brand-slot-text { min-width: 0; line-height: 1.15; display: grid; }
