@@ -14,6 +14,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
 import { type ReactNode, useId, useState } from 'react';
 
 import type { ListedHost } from '../api';
+import { Unknown } from '../components/Unknown';
 import { osNames } from '../format';
 import { HostStatusBadge } from '../hosts/HostStatusBadge';
 import { byName } from './byPackage';
@@ -26,11 +27,15 @@ const statuses = [
   ['disconnected', 'Disconnected'],
 ] as const;
 
+/** A host's OS as a filter value: `unknown` until its agent reports it. */
+const osOf = (host: ListedHost) => host.os ?? 'unknown';
+const osLabels: Record<string, string> = { ...osNames, unknown: 'Unknown' };
+
 const roleNames = (host: ListedHost) => host.roles.map((role) => role.name).join(', ');
 
 const sortKeys: Record<Column, (host: ListedHost) => string> = {
   name: (host) => host.name,
-  os: (host) => `${osNames[host.os]} ${host.name}`,
+  os: (host) => `${osLabels[osOf(host)]} ${host.name}`,
   roles: (host) => `${roleNames(host)} ${host.name}`,
   status: (host) => `${host.status === 'connected' ? '1' : '0'} ${host.name}`,
 };
@@ -39,7 +44,7 @@ const sortKeys: Record<Column, (host: ListedHost) => string> = {
  *  the group's values, and must match every group that has a value. */
 function matches(host: ListedHost, filters: Filters) {
   return (
-    (filters.os.size === 0 || filters.os.has(host.os)) &&
+    (filters.os.size === 0 || filters.os.has(osOf(host))) &&
     (filters.status.size === 0 || filters.status.has(host.status)) &&
     (filters.role.size === 0 || host.roles.some((role) => filters.role.has(role.id)))
   );
@@ -78,8 +83,8 @@ export function HostPicker({
     {
       key: 'os',
       label: 'OS',
-      values: Object.entries(osNames)
-        .map(([value, label]) => ({ value, label, count: hosts.filter((host) => host.os === value).length }))
+      values: Object.entries(osLabels)
+        .map(([value, label]) => ({ value, label, count: hosts.filter((host) => osOf(host) === value).length }))
         .filter((entry) => entry.count > 0),
     },
     {
@@ -219,7 +224,7 @@ export function HostPicker({
                       <TableCell className="mono host-name">
                         <label htmlFor={`${id}-${host.id}`}>{host.name}</label>
                       </TableCell>
-                      <TableCell>{osNames[host.os]}</TableCell>
+                      <TableCell>{host.os ? osNames[host.os] : <Unknown reason="The agent reports the OS when it connects" />}</TableCell>
                       <TableCell>{host.roles.length ? roleNames(host) : <span className="muted">None</span>}</TableCell>
                       <TableCell>
                         <HostStatusBadge status={host.status} />

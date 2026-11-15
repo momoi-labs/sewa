@@ -363,7 +363,8 @@ async fn save(
              agent_os = CASE WHEN $3 THEN $6 WHEN $8 THEN agent_os END,
              agent_arch = CASE WHEN $3 THEN $7 WHEN $8 THEN agent_arch END,
              agent_user = CASE WHEN $3 THEN $9 WHEN $8 THEN agent_user END,
-             health = COALESCE($10, health)
+             health = COALESCE($10, health),
+             os = COALESCE($11, os)
          WHERE id = $1",
     )
     .bind(host)
@@ -382,6 +383,12 @@ async fn save(
             .map(|health| health.status.replace('\0', ""))
             .filter(|status| !status.is_empty()),
     )
+    // The host's OS is the one its agent runs on.
+    .bind(description.as_ref().and_then(|d| match d.os.as_deref() {
+        Some("darwin") => Some("macos"),
+        Some("linux") => Some("linux"),
+        _ => None,
+    }))
     .execute(&mut *transaction)
     .await?;
     // A silence longer than an agent keeps: the host, or the controller,

@@ -27,7 +27,6 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 400 | `unknown_challenge` | The registration challenge is unknown, used, older than five minutes, or of another login. |
 | 400 | `wrong_origin` | The client data's origin is not `SEWA_PUBLIC_URL`. |
 | 400 | `invalid_assertion` | The approval's assertion is not from a passkey of the signed-in user, or does not verify. |
-| 400 | `invalid_os` | The OS is not `linux` or `macos`. |
 | 400 | `invalid_body` | The body is not the expected JSON. |
 | 400 | `invalid_item` | An item name or version is empty, longer than 200 characters, has control characters or outer spaces, a tool is `absent`, or the OS is not `linux` or `macos`. |
 | 400 | `duplicate_item` | A role lists the same item twice. |
@@ -61,18 +60,23 @@ The controller keeps only the token's hash, so the response is the only
 place the token appears.
 
 ```json
-{ "name": "build-1", "os": "linux" }
+{ "name": "build-1" }
 ```
 
 Response `201`:
 
 ```json
 {
-  "host": { "id": "…", "name": "build-1", "os": "linux", "status": "waiting", "created_at": "…", "enrolled_at": null, "last_seen_at": null, "agent": null },
+  "host": { "id": "…", "name": "build-1", "os": null, "status": "waiting", "created_at": "…", "enrolled_at": null, "last_seen_at": null, "agent": null },
   "install_command": "curl -fsSL 'https://controller.example/install' | sudo sh -s -- '<token>'",
   "token_expires_at": "…"
 }
 ```
+
+The admin does not pick the OS. A host's `os` is null until its agent
+connects. The agent reports its OS in every report: `darwin` sets `os` to
+`macos`, and `linux` sets it to `linux`. A report without a description, or
+with another OS, leaves `os` as it is. The host's config follows `os`.
 
 ### `GET /api/hosts`
 

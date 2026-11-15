@@ -184,6 +184,27 @@ describe('sync', () => {
       expect(screen.getByRole('checkbox', { name: 'mac-1' })).not.toBeChecked();
     });
 
+    it('shows a host without an OS as unknown', async () => {
+      const user = userEvent.setup();
+      mockApi({
+        'GET /api/hosts': { status: 200, body: [listed('new-1', { os: null }), listed('build-1')] },
+        'GET /api/syncs': { status: 200, body: [] },
+        'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
+      });
+      renderRoute('/sync');
+      const table = await screen.findByRole('table', { name: 'Hosts to sync' });
+      expect(within(table).getByRole('img', { name: 'The agent reports the OS when it connects' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'OS' }));
+      expect(names()).toEqual(['build-1', 'new-1']);
+      await user.click(filter('Unknown'));
+      expect(names()).toEqual(['new-1']);
+      await user.click(filter('Unknown'));
+      await user.click(screen.getByRole('button', { name: 'None' }));
+      await user.click(screen.getByRole('button', { name: 'All Linux' }));
+      expect(screen.getByRole('checkbox', { name: 'new-1' })).not.toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'build-1' })).toBeChecked();
+    });
+
     it('sorts by a column and reverses on a second click', async () => {
       const user = userEvent.setup();
       await open();
