@@ -27,33 +27,9 @@ import { X } from 'lucide-react';
 import { useState } from 'react';
 
 import type { Item, ItemKind, Os } from '../api';
-import { isWord, itemKey, itemProblem, splitKey } from './items';
+import { type GroupKey, groupOf, groups, isWord, itemKey, itemProblem, splitKey } from './items';
 
 const MAX_SUGGESTIONS = 8;
-
-/** Where an item comes from. A role's items show in these groups, in this
- *  order. */
-export const groups = [
-  { key: 'default', label: 'OS default (pacman on Linux, Homebrew on macOS)', manager: 'OS default' },
-  { key: 'brew', label: 'Homebrew', manager: 'Homebrew' },
-  { key: 'brew-cask', label: 'Cask', manager: 'Homebrew cask' },
-  { key: 'pacman', label: 'pacman', manager: 'pacman' },
-  { key: 'aur', label: 'AUR', manager: 'AUR' },
-  { key: 'tool', label: 'mise tools', manager: 'mise' },
-  { key: 'other', label: 'Other packages', manager: '' },
-] as const;
-
-export type GroupKey = (typeof groups)[number]['key'];
-
-/** The group of an item: its manager prefix, the OS default, or mise. */
-export function groupOf(item: Pick<Item, 'kind' | 'name'>): GroupKey {
-  if (item.kind === 'tool') return 'tool';
-  const { scope } = splitKey(item.name);
-  if (scope === null) return 'default';
-  return groups.some((group) => group.key === scope && scope !== 'tool' && scope !== 'other')
-    ? (scope as GroupKey)
-    : 'other';
-}
 
 /** The items in their groups, sorted by name, with empty groups left out. */
 export function groupItems(items: Item[], query = '') {

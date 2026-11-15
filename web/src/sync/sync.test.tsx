@@ -190,6 +190,30 @@ describe('sync', () => {
     );
   });
 
+  it('shows the plans by package and filters them by host', async () => {
+    const user = userEvent.setup();
+    const htop = { id: { kind: 'package', name: 'htop' }, current: null, desired: 'latest', action: 'create' };
+    const names = ['build-1', 'build-2', 'build-3', 'build-4', 'build-5'];
+    const hosts = names.map((name, n) =>
+      picked(`${n}`, name, n === 4 ? { plan: { ...plan, plan: { resources: [htop] } } } : {}),
+    );
+    hosts.push(picked('off', 'build-6', { plan: null, status: 'disconnected' }));
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: { ...ready, hosts } } });
+    renderRoute(`/sync/${ready.id}`);
+
+    const install = await screen.findByRole('table', { name: 'Install (2)' });
+    expect(within(install).getByRole('row', { name: /htop/ })).toHaveTextContent('build-5');
+    await user.click(within(install).getByRole('button', { name: /show all 4 hosts for jq/ }));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('build-4');
+    await user.keyboard('{Escape}');
+    expect(screen.getByText(/No plan to sign: Offline: build-6/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Show the plan of' }));
+    await user.click(await screen.findByRole('option', { name: 'Only build-5' }));
+    const only = await screen.findByRole('table', { name: 'Install (1)' });
+    expect(within(only).queryByText('jq')).not.toBeInTheDocument();
+  });
+
   it('says when there is nothing to sync', async () => {
     const inSync = { ...plan, exit_code: 0, plan: { resources: [] } };
     mockApi({
