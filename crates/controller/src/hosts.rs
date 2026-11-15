@@ -4,18 +4,20 @@
 
 use std::net::SocketAddr;
 
-use axum::Json;
 use axum::extract::{ConnectInfo, Path, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{ApiResult, Failure};
+use crate::events::About;
 use crate::status::{Status, status};
-use crate::{AppState, changes, desired, events, install, roles, secret};
+use crate::whois::Identity;
+use crate::{AppState, desired, events, install, roles, secret, syncs};
 
 /// How long an install token stays valid.
 pub const TOKEN_LIFETIME: Duration = Duration::hours(1);
@@ -316,10 +318,8 @@ pub struct Drift {
     pub status: &'static str,
     /// Ignore hid this drift. It shows again when the drift changes.
     pub ignored: bool,
-    /// The open revert change of the host, if any.
-    pub revert_change: Option<Uuid>,
     #[serde(flatten)]
-    pub plan: changes::Plan,
+    pub plan: syncs::Plan,
 }
 
 #[derive(Debug, Serialize)]
@@ -336,18 +336,18 @@ pub struct Undeclared {
 
 #[derive(Debug, Serialize)]
 pub struct HostState {
+    /// The roles an admin gave the host. Every host also gets the built-in
+    /// role, which is not in this list.
     pub roles: Vec<roles::Named>,
-    /// With the draft applied, or null without a draft.
-    pub proposed_roles: Option<Vec<roles::Named>>,
     pub adjustments: Vec<Adjustment>,
-    pub proposed_adjustments: Option<Vec<Adjustment>>,
-    /// The host's approved items: its roles' items with its adjustments.
+    /// The host's items: the built-in role's, its roles' for its OS, and
+    /// its adjustments.
     pub items: Vec<desired::Item>,
     /// The config the host gets for them.
     pub config: String,
     /// The health status the agent last reported.
     pub health: Option<String>,
-    /// The last plan of the approved state, or null before the first.
+    /// The last plan of the desired state, or null before the first.
     pub drift: Option<Drift>,
     pub undeclared: Option<Undeclared>,
 }
@@ -382,24 +382,25 @@ pub async fn state(
 ) -> ApiResult<Json<HostState>> {
     let id = host_id(&id)?;
     let mut connection = state.pool.acquire().await?;
+    Ok(Json(host_state(&mut connection, id).await?))
+}
+
+async fn host_state(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<HostState> {
     type Explicit = (
         Option<String>,
         Option<String>,
         Option<Vec<String>>,
         Option<DateTime<Utc>>,
         Option<serde_json::Value>,
-        Option<Uuid>,
     );
     let row: Option<Explicit> = sqlx::query_as(
-        "SELECT health, explicit_manager, explicit_packages, explicit_reported_at,
-                drift_ignored,
-                (SELECT c.id FROM changes c WHERE c.status = 'draft' AND c.revert_host = hosts.id)
+        "SELECT health, explicit_manager, explicit_packages, explicit_reported_at, drift_ignored
          FROM hosts WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut *connection)
     .await?;
-    let (health, manager, explicit, reported_at, ignored, revert_change) =
+    let (health, manager, explicit, reported_at, ignored) =
         row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
     let ignored = ignored.unwrap_or_default();
     let ignored_plan = ignored["plan_hash"].as_str();
@@ -409,16 +410,16 @@ pub async fn state(
         .flatten()
         .filter_map(serde_json::Value::as_str)
         .collect();
-    let (approved, proposed) = desired::states(&mut connection).await?;
-    let items = approved.host_items(id);
+    let current = desired::State::load(&mut *connection).await?;
+    let items = current.host_items(id);
     let config = desired::render(&items);
-    let plan: Option<_> = sqlx::query_as(changes::SELECT_PLAN)
+    let plan: Option<_> = sqlx::query_as(syncs::SELECT_PLAN)
         .bind(id)
         .bind(desired::CURRENT)
         .fetch_optional(&mut *connection)
         .await?;
     let drift = plan.map(|row| {
-        let plan = changes::plan(row, Some(&desired::hash(&config)));
+        let plan = syncs::plan(row, Some(&desired::hash(&config)));
         Drift {
             status: match plan.exit_code {
                 0 => "in_sync",
@@ -426,7 +427,6 @@ pub async fn state(
                 _ => "error",
             },
             ignored: plan.exit_code == 2 && ignored_plan == Some(plan.plan_hash.as_str()),
-            revert_change,
             plan,
         }
     });
@@ -449,21 +449,105 @@ pub async fn state(
         }
         _ => None,
     };
-    Ok(Json(HostState {
-        roles: named_roles(&approved, id),
-        proposed_roles: proposed
-            .as_ref()
-            .map(|(_, proposed)| named_roles(proposed, id)),
-        adjustments: adjustments(&approved, id),
-        proposed_adjustments: proposed
-            .as_ref()
-            .map(|(_, proposed)| adjustments(proposed, id)),
+    Ok(HostState {
+        roles: named_roles(&current, id),
+        adjustments: adjustments(&current, id),
         items: roles::items(&items),
         config,
         health,
         drift,
         undeclared,
-    }))
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Edits {
+    pub edits: Vec<desired::Edit>,
+}
+
+/// The most edits one call takes.
+const EDIT_LIMIT: usize = 500;
+
+/// `POST /api/hosts/{id}/edits`: changes the host's roles and adjustments
+/// at once, and returns its state. 400 `invalid_edit`, `too_many_edits`,
+/// or `unknown_role` (the built-in role counts as unknown: every host has
+/// it). Records `host.roles_set` and `host.items_set`. Hosts get the
+/// change at their next sync.
+pub async fn edit(
+    State(state): State<AppState>,
+    Extension(identity): Extension<Identity>,
+    Path(id): Path<String>,
+    Json(edits): Json<Edits>,
+) -> ApiResult<Json<HostState>> {
+    let id = host_id(&id)?;
+    let edits = edits.edits;
+    if edits.len() > EDIT_LIMIT {
+        return Err(Failure::new(StatusCode::BAD_REQUEST, "too_many_edits"));
+    }
+    if !edits.iter().all(desired::Edit::is_valid) {
+        return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_edit"));
+    }
+    let mut transaction = state.pool.begin().await?;
+    let found: Option<Uuid> = sqlx::query_scalar("SELECT id FROM hosts WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    found.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
+    let named: Vec<Uuid> = edits
+        .iter()
+        .filter_map(|edit| match edit {
+            desired::Edit::HostRoleAdd { role } | desired::Edit::HostRoleRemove { role } => {
+                Some(*role)
+            }
+            _ => None,
+        })
+        .collect();
+    roles::known(&mut transaction, &named).await?;
+    let before = desired::State::load(&mut transaction).await?.roles_of(id);
+    let mut items = Vec::new();
+    for edit in &edits {
+        desired::save(&mut transaction, id, edit).await?;
+        if !matches!(
+            edit,
+            desired::Edit::HostRoleAdd { .. } | desired::Edit::HostRoleRemove { .. }
+        ) {
+            items.push(edit);
+        }
+    }
+    let after = desired::State::load(&mut transaction).await?.roles_of(id);
+    let names = |from: &[(Uuid, String)], to: &[(Uuid, String)]| -> Vec<String> {
+        from.iter()
+            .filter(|role| !to.contains(role))
+            .map(|(_, name)| name.clone())
+            .collect()
+    };
+    let (added, removed) = (names(&after, &before), names(&before, &after));
+    let about = About {
+        host: Some(id),
+        sync: None,
+        role: None,
+    };
+    if !added.is_empty() || !removed.is_empty() {
+        events::record_about(
+            &mut transaction,
+            about,
+            events::HOST_ROLES_SET,
+            serde_json::json!({ "by": identity.login, "added": added, "removed": removed }),
+        )
+        .await?;
+    }
+    if !items.is_empty() {
+        events::record_about(
+            &mut transaction,
+            about,
+            events::HOST_ITEMS_SET,
+            serde_json::json!({ "by": identity.login, "edits": items }),
+        )
+        .await?;
+    }
+    let host_state = host_state(&mut transaction, id).await?;
+    transaction.commit().await?;
+    Ok(Json(host_state))
 }
 
 #[cfg(test)]

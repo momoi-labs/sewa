@@ -13,8 +13,6 @@ use sqlx::migrate::Migrator;
 use crate::install::AgentFiles;
 use crate::whois::WhoIs;
 
-pub mod approvals;
-pub mod changes;
 pub mod desired;
 pub mod drift;
 pub mod enroll;
@@ -27,6 +25,7 @@ pub mod passkeys;
 pub mod roles;
 pub mod secret;
 pub mod status;
+pub mod syncs;
 pub mod web;
 pub mod whois;
 
@@ -50,6 +49,21 @@ impl FromRef<AppState> for Arc<AgentFiles> {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct Instance {
+    /// The address of this controller, as agents reach it.
+    pub address: String,
+}
+
+/// `GET /api/instance`: about this controller, for the web header.
+async fn instance(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<Instance> {
+    axum::Json(Instance {
+        address: state.public_url.clone(),
+    })
+}
+
 /// The largest OpAMP message the controller reads.
 const OPAMP_LIMIT: usize = 1024 * 1024;
 
@@ -59,19 +73,19 @@ pub fn router(state: AppState) -> Router {
         .route("/hosts/{id}", get(hosts::get))
         .route("/hosts/{id}/events", get(hosts::events))
         .route("/hosts/{id}/state", get(hosts::state))
-        .route("/hosts/{id}/drift/revert", post(drift::revert))
+        .route("/hosts/{id}/edits", post(hosts::edit))
         .route("/hosts/{id}/drift/adopt", post(drift::adopt))
         .route("/hosts/{id}/drift/ignore", post(drift::ignore))
         .route("/passkeys", get(passkeys::list).post(passkeys::register))
         .route("/passkeys/options", post(passkeys::options))
         .route("/roles", get(roles::list).post(roles::create))
-        .route("/roles/{id}", get(roles::get))
-        .route("/changes", get(changes::list))
-        .route("/changes/draft/edits", post(changes::add_edit))
-        .route("/changes/{id}", get(changes::get))
-        .route("/changes/{id}/discard", post(changes::discard))
-        .route("/changes/{id}/approval", post(approvals::options))
-        .route("/changes/{id}/approve", post(approvals::approve))
+        .route("/roles/{id}", get(roles::get).put(roles::save))
+        .route("/instance", get(instance))
+        .route("/syncs", get(syncs::list).post(syncs::create))
+        .route("/syncs/edits", get(syncs::edits))
+        .route("/syncs/{id}", get(syncs::get))
+        .route("/syncs/{id}/approval", post(syncs::options))
+        .route("/syncs/{id}/approve", post(syncs::approve))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             hosts::require_admin,

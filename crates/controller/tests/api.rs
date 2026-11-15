@@ -449,10 +449,6 @@ async fn a_host_reads_with_its_events_newest_first(pool: PgPool) {
     }
 }
 
-async fn edit(app: &Router, edit: Value) -> (StatusCode, Value) {
-    json_call(app, ADMIN, "POST", "/api/changes/draft/edits", Some(edit)).await
-}
-
 async fn create_role(app: &Router, name: &str) -> String {
     let (status, role) = json_call(
         app,
@@ -464,6 +460,28 @@ async fn create_role(app: &Router, name: &str) -> String {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{role}");
     role["id"].as_str().unwrap().to_owned()
+}
+
+async fn save_role(app: &Router, role: &str, body: Value) -> (StatusCode, Value) {
+    json_call(app, ADMIN, "PUT", &format!("/api/roles/{role}"), Some(body)).await
+}
+
+async fn host_edits(app: &Router, host: &str, edits: Value) -> (StatusCode, Value) {
+    json_call(
+        app,
+        ADMIN,
+        "POST",
+        &format!("/api/hosts/{host}/edits"),
+        Some(json!({ "edits": edits })),
+    )
+    .await
+}
+
+async fn host_state(app: &Router, host: &str) -> Value {
+    let (status, state) =
+        json_call(app, ADMIN, "GET", &format!("/api/hosts/{host}/state"), None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    state
 }
 
 fn plan_message(instance: Uuid, plan: Value) -> AgentToServer {
@@ -478,9 +496,8 @@ fn plan_message(instance: Uuid, plan: Value) -> AgentToServer {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
-async fn edits_go_into_one_draft_change(pool: PgPool) {
+async fn roles_save_directly_and_record_what_changed(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, _) = create_host(&app, "node-1").await;
     let role = create_role(&app, "base").await;
     let (status, body) = json_call(
         &app,
@@ -495,117 +512,230 @@ async fn edits_go_into_one_draft_change(pool: PgPool) {
         (StatusCode::CONFLICT, json!({ "error": "name_taken" }))
     );
 
-    let (status, change) = edit(
-        &app,
-        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{change}");
-    assert_eq!(change["status"], "draft");
-    let (_, second) = edit(
-        &app,
-        json!({ "op": "host_role_add", "host": host, "role": role }),
-    )
-    .await;
-    assert_eq!(second["id"], change["id"]);
-    assert_eq!(second["edit_count"], 2);
+    let jq = json!({ "kind": "package", "name": "jq", "version": "latest", "os": null });
+    let node = json!({ "kind": "tool", "name": "node", "version": "24", "os": "macos" });
+    let (status, saved) =
+        save_role(&app, &role, json!({ "name": "base", "items": [jq, node] })).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["items"], json!([jq, node]));
 
-    let (status, body) = edit(
+    for (body, error) in [
+        (
+            json!({ "name": "base", "items": [{ "kind": "tool", "name": "node", "version": "absent" }] }),
+            "invalid_item",
+        ),
+        (
+            json!({ "name": "base", "items": [{ "kind": "tool", "name": "node", "version": "1", "os": "windows" }] }),
+            "invalid_item",
+        ),
+        (
+            json!({ "name": "base", "items": [jq, jq] }),
+            "duplicate_item",
+        ),
+        (json!({ "name": "two words", "items": [] }), "invalid_name"),
+    ] {
+        let (status, body) = save_role(&app, &role, body).await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::BAD_REQUEST, json!({ "error": error }))
+        );
+    }
+
+    // A rename and an edit of the version: the event lists what changed.
+    let (status, saved) = save_role(
         &app,
-        json!({ "op": "role_item_set", "role": Uuid::new_v4(), "kind": "package", "name": "jq", "version": "latest" }),
+        &role,
+        json!({ "name": "devtools", "items": [{ "kind": "tool", "name": "node", "version": "22", "os": "macos" }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["name"], "devtools");
+    let data: Vec<Value> =
+        sqlx::query_scalar("SELECT data FROM events WHERE kind = 'role.saved' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[1]["renamed_from"], "base");
+    assert_eq!(data[1]["removed"][0]["name"], "jq");
+    assert_eq!(data[1]["changed"][0]["version"], "22");
+    assert_eq!(data[1]["added"], json!([]));
+
+    // The edits since the last sync, which has not happened yet.
+    let (_, edits) = json_call(&app, ADMIN, "GET", "/api/syncs/edits", None).await;
+    assert_eq!(edits["since"], Value::Null);
+    assert_eq!(edits["edits"].as_array().unwrap().len(), 2);
+    assert_eq!(edits["edits"][1]["role"]["name"], "devtools");
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn the_bootstrap_role_is_built_in(pool: PgPool) {
+    let app = app(pool.clone());
+    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
+    let bootstrap = &roles[0];
+    assert_eq!(bootstrap["name"], "bootstrap");
+    assert_eq!(bootstrap["builtin"], true);
+    assert_eq!(
+        bootstrap["items"],
+        json!([{ "kind": "package", "name": "mise", "version": "latest", "os": null }])
+    );
+    let id = bootstrap["id"].as_str().unwrap();
+    let (status, body) = save_role(&app, id, json!({ "name": "base", "items": [] })).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "builtin_role" }))
+    );
+    let (status, body) = save_role(
+        &app,
+        id,
+        json!({ "name": "bootstrap", "items": [{ "kind": "tool", "name": "node", "version": "24" }] }),
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "bootstrap_packages_only" })
+        )
+    );
+    // Admins add packages to it, and every host gets them with the OS's
+    // package manager.
+    let (status, _) = save_role(
+        &app,
+        id,
+        json!({ "name": "bootstrap", "items": [
+            { "kind": "package", "name": "mise", "version": "latest" },
+            { "kind": "package", "name": "git", "version": "latest" }
+        ] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (linux, _) = create_host(&app, "build-1").await;
+    let (status, created) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        "/api/hosts",
+        Some(json!({ "name": "mac-1", "os": "macos" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mac = created["host"]["id"].as_str().unwrap();
+    let config = host_state(&app, &linux).await["config"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(config.contains("\"pacman:mise\" = \"latest\""), "{config}");
+    assert!(config.contains("\"pacman:git\" = \"latest\""), "{config}");
+    let config = host_state(&app, mac).await["config"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(config.contains("\"brew:mise\" = \"latest\""), "{config}");
+
+    // A host cannot drop or add the built-in role: it always has it.
+    let (status, body) = host_edits(
+        &app,
+        &linux,
+        json!([{ "op": "host_role_remove", "role": id }]),
     )
     .await;
     assert_eq!(
         (status, body),
         (StatusCode::BAD_REQUEST, json!({ "error": "unknown_role" }))
     );
-    let (status, body) = edit(
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn hosts_get_roles_and_items_for_their_os(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, _) = create_host(&app, "build-1").await;
+    let role = create_role(&app, "base").await;
+    save_role(
         &app,
-        json!({ "op": "role_item_set", "role": role, "kind": "tool", "name": "node", "version": "absent" }),
+        &role,
+        json!({ "name": "base", "items": [
+            { "kind": "package", "name": "jq", "version": "latest" },
+            { "kind": "package", "name": "brew-cask:firefox", "version": "latest", "os": "macos" },
+            { "kind": "tool", "name": "node", "version": "24", "os": "linux" }
+        ] }),
+    )
+    .await;
+    let (status, state) = host_edits(
+        &app,
+        &host,
+        json!([
+            { "op": "host_role_add", "role": role },
+            { "op": "host_item_set", "kind": "package", "name": "sl", "version": "latest" }
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    assert_eq!(state["roles"][0]["name"], "base");
+    let config = state["config"].as_str().unwrap();
+    assert!(config.contains("\"jq\" = \"latest\""), "{config}");
+    assert!(config.contains("\"sl\" = \"latest\""), "{config}");
+    assert!(config.contains("\"node\" = \"24\""), "{config}");
+    assert!(!config.contains("firefox"), "{config}");
+
+    let (status, body) = host_edits(
+        &app,
+        &host,
+        json!([{ "op": "host_role_add", "role": Uuid::new_v4() }]),
     )
     .await;
     assert_eq!(
         (status, body),
-        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_item" }))
+        (StatusCode::BAD_REQUEST, json!({ "error": "unknown_role" }))
     );
-
-    // The approved state is untouched; the draft shows what it proposes.
-    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
-    assert_eq!(roles[0]["items"], json!([]));
-    assert_eq!(
-        roles[0]["proposed_items"],
-        json!([{ "kind": "package", "name": "jq", "version": "latest" }])
-    );
-    assert_eq!(roles[0]["proposed_hosts"][0]["name"], "node-1");
-    let (_, state) = json_call(
+    let (status, body) = host_edits(
         &app,
-        ADMIN,
-        "GET",
-        &format!("/api/hosts/{host}/state"),
-        None,
+        &host,
+        json!([{ "op": "host_item_set", "kind": "tool", "name": "node", "version": "absent" }]),
     )
     .await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::BAD_REQUEST, json!({ "error": "invalid_edit" }))
+    );
+    let (status, state) = host_edits(
+        &app,
+        &host,
+        json!([{ "op": "host_role_remove", "role": role }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(state["roles"], json!([]));
-    assert_eq!(state["proposed_roles"][0]["name"], "base");
-
-    let id = change["id"].as_str().unwrap();
-    let (status, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail["edits"].as_array().unwrap().len(), 2);
-    assert_eq!(detail["hosts"][0]["name"], "node-1");
-    assert!(
-        detail["hosts"][0]["proposed_config"]
-            .as_str()
-            .unwrap()
-            .contains("[bootstrap.packages]\n\"jq\" = \"latest\"\n")
-    );
-    assert_eq!(detail["hosts"][0]["plan"], Value::Null);
-
-    let discard = format!("/api/changes/{id}/discard");
-    let (status, closed) = json_call(&app, ADMIN, "POST", &discard, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(closed["status"], "discarded");
-    let (status, body) = json_call(&app, ADMIN, "POST", &discard, None).await;
+    let kinds = events(&pool, &host).await;
     assert_eq!(
-        (status, body),
-        (StatusCode::CONFLICT, json!({ "error": "not_draft" }))
-    );
-    let kinds: Vec<String> =
-        sqlx::query_scalar("SELECT kind FROM events WHERE change_id = $1::uuid ORDER BY id")
-            .bind(id)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        kinds,
-        [
-            "change.created",
-            "change.edited",
-            "change.edited",
-            "change.discarded"
-        ]
+        kinds
+            .iter()
+            .filter(|kind| kind.starts_with("host.") && kind.ends_with("_set"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["host.roles_set", "host.items_set", "host.roles_set"]
     );
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
-async fn the_agent_gets_configs_and_reports_plans(pool: PgPool) {
+async fn the_agent_gets_its_config_and_reports_plans(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, token) = create_host(&app, "node-1").await;
+    let (host, token) = create_host(&app, "build-1").await;
     let (_, credential) = enroll(&app, NODE, &token).await;
     let instance = Uuid::new_v4();
     let role = create_role(&app, "base").await;
-    edit(
+    host_edits(
         &app,
-        json!({ "op": "host_role_add", "host": host, "role": role }),
+        &host,
+        json!([{ "op": "host_role_add", "role": role }]),
     )
     .await;
-    let (_, change) = edit(
+    save_role(
         &app,
-        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
+        &role,
+        json!({ "name": "base", "items": [{ "kind": "package", "name": "jq", "version": "latest" }] }),
     )
     .await;
-    let id = change["id"].as_str().unwrap();
-    let name = format!("change/{id}");
 
     let (_, body) = opamp(&app, &credential, &report(instance, true)).await;
     let remote = ServerToAgent::decode(&body[..])
@@ -613,11 +743,12 @@ async fn the_agent_gets_configs_and_reports_plans(pool: PgPool) {
         .remote_config
         .unwrap();
     let configs = remote.config.unwrap().config_map;
-    assert_eq!(configs.len(), 2);
-    assert!(!String::from_utf8_lossy(&configs["current"].body).contains("jq"));
-    let proposed = &configs[&name];
-    assert_eq!(proposed.content_type, "application/toml");
-    assert!(String::from_utf8_lossy(&proposed.body).contains("\"jq\" = \"latest\""));
+    assert_eq!(configs.keys().collect::<Vec<_>>(), ["current"]);
+    let current = &configs["current"];
+    assert_eq!(current.content_type, "application/toml");
+    let body = String::from_utf8_lossy(&current.body).into_owned();
+    assert!(body.contains("\"jq\" = \"latest\""), "{body}");
+    assert_eq!(body, host_state(&app, &host).await["config"]);
 
     // An agent that has the config gets it no more.
     let mut known = report(instance, false);
@@ -625,15 +756,15 @@ async fn the_agent_gets_configs_and_reports_plans(pool: PgPool) {
         last_remote_config_hash: remote.config_hash.clone(),
         ..Default::default()
     });
-    let (_, body) = opamp(&app, &credential, &known).await;
+    let (_, answer) = opamp(&app, &credential, &known).await;
     assert!(
-        ServerToAgent::decode(&body[..])
+        ServerToAgent::decode(&answer[..])
             .unwrap()
             .remote_config
             .is_none()
     );
 
-    let config_hash = sewa_controller::desired::hash(&String::from_utf8_lossy(&proposed.body));
+    let config_hash = sewa_controller::desired::hash(&body);
     let plan = json!({
         "resources": [{ "id": { "kind": "package", "name": "pacman:jq" }, "action": "create" }],
         "summary": { "create": 1 }
@@ -643,26 +774,35 @@ async fn the_agent_gets_configs_and_reports_plans(pool: PgPool) {
         &credential,
         &plan_message(
             instance,
-            json!({ "config": name, "config_hash": config_hash, "plan_hash": "p1", "exit_code": 2, "plan": plan, "error": null }),
+            json!({ "config": "current", "config_hash": config_hash, "plan_hash": "p1", "exit_code": 2, "plan": plan, "error": null }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    let reported = &detail["hosts"][0]["plan"];
-    assert_eq!(reported["plan"], plan);
-    assert_eq!(reported["exit_code"], 2);
-    assert_eq!(reported["stale"], false);
-
-    // Another edit changes the config, so the plan is stale until the
-    // agent plans again.
-    edit(
+    let state = host_state(&app, &host).await;
+    assert_eq!(state["drift"]["plan"], plan);
+    assert_eq!(state["drift"]["stale"], false);
+    // A plan of a config from before syncs is dropped.
+    let (status, _) = opamp(
         &app,
-        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "git", "version": "latest" }),
+        &credential,
+        &plan_message(
+            instance,
+            json!({ "config": format!("change/{}", Uuid::new_v4()), "config_hash": "x", "plan_hash": "p9", "exit_code": 2, "plan": {}, "error": null }),
+        ),
     )
     .await;
-    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    assert_eq!(detail["hosts"][0]["plan"]["stale"], true);
+    assert_eq!(status, StatusCode::OK);
+
+    // Another save changes the config, so the plan is stale until the
+    // agent plans again.
+    save_role(
+        &app,
+        &role,
+        json!({ "name": "base", "items": [{ "kind": "package", "name": "git", "version": "latest" }] }),
+    )
+    .await;
+    assert_eq!(host_state(&app, &host).await["drift"]["stale"], true);
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
@@ -912,47 +1052,68 @@ async fn passkeys_register_and_get_pinned_at_install(pool: PgPool) {
     assert!(kinds.contains(&"passkey.registered".to_owned()));
 }
 
-/// A connected host in a role, with a draft that adds `jq` to the role,
-/// and the agent's plan of it. Returns the host, the credential, the
-/// instance, and the change id.
-async fn planned_draft(app: &Router) -> (String, String, Uuid, String) {
-    let (host, token) = create_host(app, "node-1").await;
-    let (_, credential) = enroll(app, NODE, &token).await;
-    let instance = Uuid::new_v4();
-    opamp(app, &credential, &report(instance, true)).await;
-    let role = create_role(app, "base").await;
-    edit(
-        app,
-        json!({ "op": "host_role_add", "host": host, "role": role }),
-    )
-    .await;
-    let (_, change) = edit(
-        app,
-        json!({ "op": "role_item_set", "role": role, "kind": "package", "name": "jq", "version": "latest" }),
-    )
-    .await;
-    let id = change["id"].as_str().unwrap().to_owned();
-    let (_, body) = opamp(app, &credential, &report(instance, false)).await;
-    let configs = ServerToAgent::decode(&body[..])
+/// Sends a plan of the host's current config.
+async fn plan_current(
+    app: &Router,
+    host: &str,
+    credential: &str,
+    instance: Uuid,
+    exit_code: i32,
+    plan_hash: &str,
+) {
+    let config = host_state(app, host).await["config"]
+        .as_str()
         .unwrap()
-        .remote_config
-        .unwrap()
-        .config
-        .unwrap()
-        .config_map;
-    let name = format!("change/{id}");
-    let config_hash =
-        sewa_controller::desired::hash(&String::from_utf8_lossy(&configs[&name].body));
-    opamp(
+        .to_owned();
+    let config_hash = sewa_controller::desired::hash(&config);
+    let (status, _) = opamp(
         app,
-        &credential,
+        credential,
         &plan_message(
             instance,
-            json!({ "config": name, "config_hash": config_hash, "plan_hash": "p1", "exit_code": 2, "plan": {}, "error": null }),
+            json!({ "config": "current", "config_hash": config_hash, "plan_hash": plan_hash, "exit_code": exit_code, "plan": {}, "error": null }),
         ),
     )
     .await;
-    (host, credential, instance, id)
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A connected host in a role that adds `jq`, and the agent's plan of it.
+/// Returns the host, the credential, and the instance.
+async fn planned_host(app: &Router, name: &str) -> (String, String, Uuid) {
+    let (host, token) = create_host(app, name).await;
+    let (_, credential) = enroll(app, NODE, &token).await;
+    let instance = Uuid::new_v4();
+    opamp(app, &credential, &report(instance, true)).await;
+    let role = create_role(app, &format!("{name}-role")).await;
+    save_role(
+        app,
+        &role,
+        json!({ "name": format!("{name}-role"), "items": [{ "kind": "package", "name": "jq", "version": "latest" }] }),
+    )
+    .await;
+    host_edits(app, &host, json!([{ "op": "host_role_add", "role": role }])).await;
+    plan_current(app, &host, &credential, instance, 2, "p1").await;
+    (host, credential, instance)
+}
+
+async fn start_sync(app: &Router, hosts: Value) -> String {
+    let (status, sync) = json_call(
+        app,
+        ADMIN,
+        "POST",
+        "/api/syncs",
+        Some(json!({ "hosts": hosts })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{sync}");
+    sync["id"].as_str().unwrap().to_owned()
+}
+
+async fn get_sync(app: &Router, id: &str) -> Value {
+    let (status, sync) = json_call(app, ADMIN, "GET", &format!("/api/syncs/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{sync}");
+    sync
 }
 
 fn outcome_message(instance: Uuid, outcome: &Outcome) -> AgentToServer {
@@ -975,33 +1136,83 @@ async fn sent_approval(app: &Router, credential: &str, instance: Uuid) -> Option
     Some(serde_json::from_slice(&custom.data).unwrap())
 }
 
-async fn approve_with(app: &Router, id: &str, key: &Authenticator) -> (StatusCode, Value) {
+async fn approve_with(
+    app: &Router,
+    id: &str,
+    key: &Authenticator,
+    hosts: Option<Value>,
+) -> (StatusCode, Value) {
+    let only = json!({ "hosts": hosts });
     let (status, options) = json_call(
         app,
         ADMIN,
         "POST",
-        &format!("/api/changes/{id}/approval"),
-        None,
+        &format!("/api/syncs/{id}/approval"),
+        Some(only),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{options}");
+    if status != StatusCode::OK {
+        return (status, options);
+    }
     let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
-    let assertion = key.assert(RP_ID, ORIGIN, &challenge);
+    let mut body = serde_json::to_value(key.assert(RP_ID, ORIGIN, &challenge)).unwrap();
+    body["hosts"] = hosts.unwrap_or(Value::Null);
     json_call(
         app,
         ADMIN,
         "POST",
-        &format!("/api/changes/{id}/approve"),
-        Some(serde_json::to_value(&assertion).unwrap()),
+        &format!("/api/syncs/{id}/approve"),
+        Some(body),
     )
     .await
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
-async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
+async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, credential, instance, id) = planned_draft(&app).await;
-    let approval_uri = format!("/api/changes/{id}/approval");
+    let (host, credential, instance) = planned_host(&app, "build-1").await;
+    // A host already in sync, and one that never planned.
+    let (quiet, quiet_credential, quiet_instance) = planned_host(&app, "build-2").await;
+    plan_current(&app, &quiet, &quiet_credential, quiet_instance, 0, "p0").await;
+    let (silent, token) = create_host(&app, "build-3").await;
+    enroll(&app, NODE, &token).await;
+    let (pending, _) = create_host(&app, "build-4").await;
+
+    for (hosts, error) in [
+        (json!([]), "no_hosts"),
+        (json!([pending]), "unknown_host"),
+        (json!([Uuid::new_v4()]), "unknown_host"),
+    ] {
+        let (status, body) = json_call(
+            &app,
+            ADMIN,
+            "POST",
+            "/api/syncs",
+            Some(json!({ "hosts": hosts })),
+        )
+        .await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::BAD_REQUEST, json!({ "error": error }))
+        );
+    }
+    let id = start_sync(&app, json!([host, quiet, silent])).await;
+    let sync = get_sync(&app, &id).await;
+    assert_eq!(sync["status"], "ready", "{sync}");
+    assert_eq!(sync["created_by"], "admin@example.com");
+    let steps: Vec<&Value> = sync["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["step"])
+        .collect();
+    assert_eq!(steps, ["picked", "picked", "picked"]);
+    assert_eq!(sync["hosts"][0]["plan"]["plan_hash"], "p1");
+    let (_, syncs) = json_call(&app, ADMIN, "GET", "/api/syncs", None).await;
+    assert_eq!(syncs[0]["id"], id);
+    assert_eq!(syncs[0]["host_count"], 3);
+
+    let approval_uri = format!("/api/syncs/{id}/approval");
     let (status, body) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
     assert_eq!(
         (status, body),
@@ -1012,7 +1223,9 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
 
     let (status, options) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
     assert_eq!(status, StatusCode::OK, "{options}");
+    // The approval keeps its wire format: `change_id` carries the sync id.
     assert_eq!(options["change_id"], id);
+    assert_eq!(options["hosts"].as_array().unwrap().len(), 1);
     assert_eq!(options["hosts"][0]["host_id"], host);
     assert_eq!(options["hosts"][0]["instance_uid"], instance.to_string());
     assert_eq!(options["hosts"][0]["plan_hash"], "p1");
@@ -1023,7 +1236,7 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
             .starts_with(&format!("sewa approval v1\nchange {id}\n"))
     );
     let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
-    let approve_uri = format!("/api/changes/{id}/approve");
+    let approve_uri = format!("/api/syncs/{id}/approve");
     // A key the admin did not register, and a signature of other plans.
     let forged = Authenticator::new(2).assert(RP_ID, ORIGIN, &challenge);
     let (status, body) = json_call(
@@ -1057,7 +1270,7 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
     assert!(sent_approval(&app, &credential, instance).await.is_none());
 
     let assertion = key.assert(RP_ID, ORIGIN, &challenge);
-    let (status, change) = json_call(
+    let (status, sync) = json_call(
         &app,
         ADMIN,
         "POST",
@@ -1065,17 +1278,20 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
         Some(serde_json::to_value(&assertion).unwrap()),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{change}");
-    assert_eq!(change["status"], "approved");
-    // The edits are the approved state now.
-    let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
-    assert_eq!(roles[0]["items"][0]["name"], "jq");
-    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    assert_eq!(detail["hosts"][0]["result"]["status"], "waiting");
-    assert_eq!(detail["approvals"][0]["by"], "admin@example.com");
+    assert_eq!(status, StatusCode::OK, "{sync}");
+    assert_eq!(sync["status"], "applying");
+    let steps: Vec<&Value> = sync["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["step"])
+        .collect();
+    assert_eq!(steps, ["waiting", "in_sync", "skipped"]);
+    assert_eq!(sync["approvals"][0]["by"], "admin@example.com");
+    assert_eq!(sync["approvals"][0]["host_count"], 1);
 
-    // The agent gets the approval with the new current config, on every
-    // answer until it reports, and it verifies against the pinned keys.
+    // The agent gets the approval on every answer until it reports, and
+    // it verifies against the pinned keys.
     let signed = sent_approval(&app, &credential, instance).await.unwrap();
     assert_eq!(signed.approval.change_id.to_string(), id);
     let pinned = Pinned {
@@ -1087,6 +1303,11 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
         sewa_approval::verify(&pinned, &signed.assertion, &signed.approval.challenge()).is_ok()
     );
     assert!(sent_approval(&app, &credential, instance).await.is_some());
+    assert!(
+        sent_approval(&app, &quiet_credential, quiet_instance)
+            .await
+            .is_none()
+    );
     let outcome = Outcome {
         approval_id: signed.approval_id,
         change_id: signed.approval.change_id,
@@ -1098,29 +1319,37 @@ async fn an_approved_change_goes_to_the_agent_and_back(pool: PgPool) {
     };
     opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
     assert!(sent_approval(&app, &credential, instance).await.is_none());
-    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    assert_eq!(detail["hosts"][0]["result"]["status"], "applied");
-    assert_eq!(detail["hosts"][0]["result"]["log"], "installed jq");
-    let result = &detail["hosts"][0]["result"];
+    let sync = get_sync(&app, &id).await;
+    assert_eq!(sync["status"], "done");
+    let result = &sync["hosts"][0]["result"];
+    assert_eq!(sync["hosts"][0]["step"], "applied");
+    assert_eq!(result["log"], "installed jq");
     let reported = chrono::DateTime::parse_from_rfc3339(result["reported_at"].as_str().unwrap())
         .unwrap()
         .timestamp_millis();
     assert_eq!(Some(reported), outcome.at);
     assert!(result["received_at"].is_string());
     let kinds = events(&pool, &host).await;
-    assert!(kinds.ends_with(&["change.approved".to_owned(), "plan.applied".to_owned()]));
+    assert!(kinds.ends_with(&["sync.approved".to_owned(), "plan.applied".to_owned()]));
+    let (_, edits) = json_call(&app, ADMIN, "GET", "/api/syncs/edits", None).await;
+    assert_eq!(edits["since"], sync["created_at"]);
+    assert_eq!(edits["edits"], json!([]));
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
-async fn a_host_whose_plan_changed_gets_approved_again(pool: PgPool) {
+async fn a_failed_or_replanned_host_is_signed_again(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, credential, instance, id) = planned_draft(&app).await;
+    let (host, credential, instance) = planned_host(&app, "build-1").await;
+    let (other, other_credential, other_instance) = planned_host(&app, "build-2").await;
     let key = Authenticator::new(1);
     register_passkey(&app, &key, ORIGIN).await;
-    let (status, _) = approve_with(&app, &id, &key).await;
-    assert_eq!(status, StatusCode::OK);
+    let id = start_sync(&app, json!([host, other])).await;
+    let (status, sync) = approve_with(&app, &id, &key, None).await;
+    assert_eq!(status, StatusCode::OK, "{sync}");
+
+    // One host's plan changed before it applied; the other failed.
     let signed = sent_approval(&app, &credential, instance).await.unwrap();
-    let outcome = Outcome {
+    let replan = Outcome {
         approval_id: signed.approval_id,
         change_id: signed.approval.change_id,
         status: "replan".to_owned(),
@@ -1128,54 +1357,95 @@ async fn a_host_whose_plan_changed_gets_approved_again(pool: PgPool) {
         log: "the plan changed since the approval".to_owned(),
         at: None,
     };
-    opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
-    let (_, detail) = json_call(&app, ADMIN, "GET", &format!("/api/changes/{id}"), None).await;
-    assert_eq!(detail["hosts"][0]["result"]["status"], "replan");
-    assert!(sent_approval(&app, &credential, instance).await.is_none());
-
-    // Until the agent plans its new current config, there is nothing to
-    // approve.
-    let approval_uri = format!("/api/changes/{id}/approval");
-    let (status, body) = json_call(&app, ADMIN, "POST", &approval_uri, None).await;
-    assert_eq!(
-        (status, body),
-        (StatusCode::CONFLICT, json!({ "error": "plans_not_ready" }))
-    );
-    let current = signed.approval.hosts[0].config_hash.clone();
+    opamp(&app, &credential, &outcome_message(instance, &replan)).await;
+    let other_signed = sent_approval(&app, &other_credential, other_instance)
+        .await
+        .unwrap();
+    let failed = Outcome {
+        approval_id: other_signed.approval_id,
+        change_id: other_signed.approval.change_id,
+        status: "failed".to_owned(),
+        plan_hash: Some("p1".to_owned()),
+        log: "pacman: target not found: jq".to_owned(),
+        at: None,
+    };
     opamp(
         &app,
-        &credential,
-        &plan_message(
-            instance,
-            json!({ "config": "current", "config_hash": current, "plan_hash": "p2", "exit_code": 2, "plan": {}, "error": null }),
-        ),
+        &other_credential,
+        &outcome_message(other_instance, &failed),
     )
     .await;
-    let (status, change) = approve_with(&app, &id, &key).await;
-    assert_eq!(status, StatusCode::OK, "{change}");
+    let sync = get_sync(&app, &id).await;
+    let steps: Vec<&Value> = sync["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["step"])
+        .collect();
+    assert_eq!(steps, ["replan", "failed"]);
+    assert_eq!(
+        sync["hosts"][1]["result"]["log"],
+        "pacman: target not found: jq"
+    );
+
+    // Retry one host: only it is signed.
+    plan_current(&app, &host, &credential, instance, 2, "p2").await;
+    let (status, sync) = approve_with(&app, &id, &key, Some(json!([host]))).await;
+    assert_eq!(status, StatusCode::OK, "{sync}");
+    let steps: Vec<&Value> = sync["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["step"])
+        .collect();
+    assert_eq!(steps, ["waiting", "failed"]);
     let again = sent_approval(&app, &credential, instance).await.unwrap();
     assert_ne!(again.approval_id, signed.approval_id);
+    assert_eq!(again.approval.hosts.len(), 1);
     assert_eq!(again.approval.hosts[0].plan_hash, "p2");
+    assert!(
+        sent_approval(&app, &other_credential, other_instance)
+            .await
+            .is_none()
+    );
+    let (status, sync) = approve_with(&app, &id, &key, Some(json!([other]))).await;
+    assert_eq!(status, StatusCode::OK, "{sync}");
+    assert_eq!(sync["hosts"][1]["step"], "waiting");
+    assert_eq!(sync["hosts"][1]["result"]["log"], Value::Null);
+    // Nothing is left to sign.
+    let (status, body) = approve_with(&app, &id, &key, None).await;
+    assert_eq!(
+        (status, body),
+        (
+            StatusCode::CONFLICT,
+            json!({ "error": "nothing_to_approve" })
+        )
+    );
     let kinds = events(&pool, &host).await;
     assert_eq!(
-        kinds
-            .iter()
-            .filter(|kind| *kind == "change.approved")
-            .count(),
+        kinds.iter().filter(|kind| *kind == "sync.approved").count(),
         2
     );
     assert!(kinds.contains(&"apply.replan".to_owned()));
+    assert!(
+        events(&pool, &other)
+            .await
+            .contains(&"apply.failed".to_owned())
+    );
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
-async fn drift_can_be_reverted_adopted_or_ignored(pool: PgPool) {
+async fn drift_can_be_adopted_or_ignored(pool: PgPool) {
     let app = app(pool.clone());
-    let (host, token) = create_host(&app, "node-1").await;
+    let (host, token) = create_host(&app, "build-1").await;
     let (_, credential) = enroll(&app, NODE, &token).await;
     let instance = Uuid::new_v4();
     opamp(&app, &credential, &report(instance, true)).await;
-    let current =
-        sewa_controller::desired::hash(&sewa_controller::desired::render(&Default::default()));
+    let config = host_state(&app, &host).await["config"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let current = sewa_controller::desired::hash(&config);
     opamp(
         &app,
         &credential,
@@ -1184,44 +1454,19 @@ async fn drift_can_be_reverted_adopted_or_ignored(pool: PgPool) {
             json!({
                 "config": "current", "config_hash": current, "plan_hash": "d1",
                 "exit_code": 2, "plan": { "resources": [] }, "error": null,
-                "explicit": { "manager": "pacman", "packages": ["git", "sl"] }
+                "explicit": { "manager": "pacman", "packages": ["git", "mise", "sl", "yay"] }
             }),
         ),
     )
     .await;
     let drift = format!("/api/hosts/{host}/drift");
+    // The bootstrap role declares mise.
+    assert_eq!(
+        host_state(&app, &host).await["undeclared"]["packages"],
+        json!(["git", "sl", "yay"])
+    );
 
-    let (status, revert) = json_call(&app, ADMIN, "POST", &format!("{drift}/revert"), None).await;
-    assert_eq!(status, StatusCode::CREATED, "{revert}");
-    assert_eq!(revert["revert_host"]["id"], host);
-    let (status, again) = json_call(&app, ADMIN, "POST", &format!("{drift}/revert"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(again["id"], revert["id"]);
-    let (_, state) = json_call(
-        &app,
-        ADMIN,
-        "GET",
-        &format!("/api/hosts/{host}/state"),
-        None,
-    )
-    .await;
-    assert_eq!(state["drift"]["revert_change"], revert["id"]);
-    // The revert approves the plan that fixes the drift.
-    let key = Authenticator::new(1);
-    register_passkey(&app, &key, ORIGIN).await;
-    let revert_id = revert["id"].as_str().unwrap();
-    let (status, options) = json_call(
-        &app,
-        ADMIN,
-        "POST",
-        &format!("/api/changes/{revert_id}/approval"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{options}");
-    assert_eq!(options["hosts"][0]["plan_hash"], "d1");
-
-    let (status, draft) = json_call(
+    let (status, _) = json_call(
         &app,
         ADMIN,
         "POST",
@@ -1229,38 +1474,46 @@ async fn drift_can_be_reverted_adopted_or_ignored(pool: PgPool) {
         Some(json!({ "package": "sl", "role": null })),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{draft}");
-    assert_eq!(draft["status"], "draft");
-    assert_ne!(draft["id"], revert["id"]);
-    let (_, state) = json_call(
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let role = create_role(&app, "base").await;
+    let (status, _) = json_call(
         &app,
         ADMIN,
-        "GET",
-        &format!("/api/hosts/{host}/state"),
-        None,
+        "POST",
+        &format!("{drift}/adopt"),
+        Some(json!({ "package": "git", "role": role })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("{drift}/adopt"),
+        Some(json!({ "package": "git", "role": Uuid::new_v4() })),
     )
     .await;
     assert_eq!(
-        state["proposed_adjustments"],
+        (status, body),
+        (StatusCode::BAD_REQUEST, json!({ "error": "unknown_role" }))
+    );
+    let state = host_state(&app, &host).await;
+    assert_eq!(
+        state["adjustments"],
         json!([{ "action": "set", "kind": "package", "name": "sl", "version": "latest" }]),
         "{state}"
     );
+    let (_, base) = json_call(&app, ADMIN, "GET", &format!("/api/roles/{role}"), None).await;
+    assert_eq!(base["items"][0]["name"], "git");
 
     let (status, _) = json_call(&app, ADMIN, "POST", &format!("{drift}/ignore"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, state) = json_call(
-        &app,
-        ADMIN,
-        "GET",
-        &format!("/api/hosts/{host}/state"),
-        None,
-    )
-    .await;
-    assert_eq!(state["drift"]["ignored"], true);
+    let state = host_state(&app, &host).await;
+    // The adjustment changed the config, so this drift is of an older plan.
+    assert_eq!(state["drift"]["stale"], true);
     assert_eq!(state["undeclared"]["packages"], json!([]));
-    assert_eq!(state["undeclared"]["ignored_count"], 2);
     let kinds = events(&pool, &host).await;
-    for kind in ["drift.reverted", "drift.adopted", "drift.ignored"] {
+    for kind in ["drift.adopted", "drift.ignored"] {
         assert!(kinds.contains(&kind.to_owned()), "{kind} in {kinds:?}");
     }
 }

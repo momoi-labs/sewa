@@ -29,20 +29,24 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 400 | `invalid_assertion` | The approval's assertion is not from a passkey of the signed-in user, or does not verify. |
 | 400 | `invalid_os` | The OS is not `linux` or `macos`. |
 | 400 | `invalid_body` | The body is not the expected JSON. |
-| 400 | `invalid_item` | An item name or version is empty, longer than 200 characters, has control characters or outer spaces, or a tool is `absent`. |
-| 400 | `unknown_role` | The edit names a role that does not exist. |
-| 400 | `unknown_host` | The edit names a host that does not exist. |
+| 400 | `invalid_item` | An item name or version is empty, longer than 200 characters, has control characters or outer spaces, a tool is `absent`, or the OS is not `linux` or `macos`. |
+| 400 | `duplicate_item` | A role lists the same item twice. |
+| 400 | `too_many_items` | A role has more than 500 items. |
+| 400 | `bootstrap_packages_only` | The built-in role gets a tool. |
+| 400 | `invalid_edit` | A host edit has an invalid item. |
+| 400 | `too_many_edits` | More than 500 host edits at once. |
+| 400 | `unknown_role` | The edit names a role that does not exist, or the built-in role. |
+| 400 | `no_hosts` | A sync picks no host. |
+| 400 | `unknown_host` | A sync picks a host that does not exist or never enrolled. |
 | 401 | `token_invalid` | The install token is unknown, used, or expired. |
 | 403 | `not_tailnet` | WhoIs does not know the caller as a tailnet node. |
 | 403 | `not_admin` | The caller's login is not in `SEWA_ADMINS`. |
-| 404 | `not_found` | The host, role, or change does not exist, or the path under `/api` is unknown. |
+| 404 | `not_found` | The host, role, or sync does not exist, or the path under `/api` is unknown. |
 | 409 | `name_taken` | A host or role with this name exists. |
-| 409 | `not_draft` | The change is not a draft. |
+| 409 | `builtin_role` | A save renames the built-in role. |
 | 409 | `passkey_exists` | The credential is saved already. |
 | 409 | `no_passkey` | The signed-in user has no passkey to approve with. |
-| 409 | `not_approvable` | The change is discarded, or approved with no host that needs a new approval. |
-| 409 | `nothing_to_approve` | The change affects no host. |
-| 409 | `plans_not_ready` | An affected host has no agent, no plan of the config it would get, or a plan that failed. |
+| 409 | `nothing_to_approve` | No host of the sync has changes to sign, and no picked host is in sync. |
 | 409 | `plans_changed` | A plan changed since the browser got the challenge. Get a new one. |
 | 503 | `whois_unavailable` | tailscaled did not answer. |
 | 500 | `internal` | Anything else. Details go to the controller log. |
@@ -108,46 +112,59 @@ Returns the host's desired state and what its agent last found:
 ```json
 {
   "roles": [{ "id": "…", "name": "base" }],
-  "proposed_roles": null,
   "adjustments": [{ "kind": "package", "name": "sl", "action": "remove" }],
-  "proposed_adjustments": null,
-  "items": [{ "kind": "package", "name": "jq", "version": "latest" }],
+  "items": [{ "kind": "package", "name": "jq", "version": "latest", "os": null }],
   "config": "# Rendered by the sewa controller. Do not edit.\n…",
   "health": "drift",
   "drift": { "status": "drift", "config_hash": "…", "plan_hash": "…", "exit_code": 2,
              "plan": {}, "error": null, "reported_at": "…", "received_at": null,
-             "stale": false, "ignored": false, "revert_change": null },
+             "stale": false, "ignored": false },
   "undeclared": { "manager": "pacman", "packages": ["htop"], "ignored_count": 0,
                   "explicit_count": 120, "reported_at": "…" }
 }
 ```
 
-- `roles`, `adjustments`, and `items` are approved. The `proposed_` fields
-  have the draft change applied, or are null without a draft.
-- `drift` is the last plan of the approved state. Its `status` is
-  `in_sync` (exit code 0), `drift` (2), or `error` (1). `stale` is true
-  when the plan is of an older config. `ignored` is true when Ignore hid
-  this drift plan. `revert_change` is the host's open revert change, or
-  null. `reported_at` is when the agent planned, by its clock.
-  `received_at` is when the controller got the plan if it came more than
-  90 seconds late, from the agent's outbox; otherwise null.
+- `roles` are the roles an admin gave the host. Every host also has the
+  built-in role, which is not in the list.
+- `items` are the host's merged items, and `config` is what the host gets
+  for them.
+- `drift` is the last plan of `current`. Its `status` is `in_sync` (exit
+  code 0), `drift` (2), or `error` (1). `stale` is true when the plan is
+  of an older config. `ignored` is true when Ignore hid this drift plan.
+  `reported_at` is when the agent planned, by its clock. `received_at` is
+  when the controller got the plan if it came more than 90 seconds late,
+  from the agent's outbox; otherwise null.
 - `undeclared` lists the packages the package manager says were installed
-  explicitly that no approved item declares, without the ones Ignore hid
-  (`ignored_count`). It is null until the agent reports them.
+  explicitly that no item of the host declares, without the ones Ignore
+  hid (`ignored_count`). It is null until the agent reports them.
 
-### `POST /api/hosts/{id}/drift/revert`
+### `POST /api/hosts/{id}/edits`
 
-Opens a revert change for the host: a change with no edits whose approval
-applies the host's approved state again, with its plan of `current`, which
-fixes the drift. Returns `201` with the change, or `200` with the open
-revert change when there is one. Records `drift.reverted`.
+Changes the host's roles and adjustments in one transaction:
+
+```json
+{ "edits": [
+  { "op": "host_role_add", "role": "…" },
+  { "op": "host_role_remove", "role": "…" },
+  { "op": "host_item_set", "kind": "tool", "name": "node", "version": "22" },
+  { "op": "host_item_remove", "kind": "package", "name": "jq" },
+  { "op": "host_item_reset", "kind": "package", "name": "jq" }
+] }
+```
+
+`host_item_reset` drops the host's adjustment, so its roles decide again.
+Returns the host's state. `400` `invalid_edit`, `too_many_edits` (more
+than 500), or `unknown_role`; the built-in role counts as unknown, since
+every host has it. Records `host.roles_set` with the role names added and
+removed, and `host.items_set` with the item edits. The host gets the
+change at its next [sync](#syncs).
 
 ### `POST /api/hosts/{id}/drift/adopt`
 
 Takes `{"package": "htop", "role": "<role id>"}`, or `"role": null` for
-the host's own adjustments. Adds the package at version `latest` as an
-edit of the draft change. Returns `201` with the draft. Records
-`drift.adopted`.
+the host's own adjustments. Adds the package at version `latest`. A role
+that has the package keeps its version. Returns `204`. Records
+`drift.adopted`. To revert a drift, sync the host.
 
 ### `POST /api/hosts/{id}/drift/ignore`
 
@@ -158,30 +175,41 @@ again when it is not in the hidden list. Returns `204`. Records
 
 ## Desired state
 
-A host's desired state is the items of its roles, with its own
-adjustments on top. An item is a `package` (a mise bootstrap package key,
-such as `jq` or `pacman:jq`) or a `tool` (a mise tool). Its version is
-`latest`, a version, or, for a package, `absent`. When two roles of a host
-declare the same item, the role whose name sorts last wins. An adjustment
-`set`s an item's version on one host, or `remove`s an item its roles
-declare.
+A host's desired state is the items of the built-in role, then of its
+roles, then its own adjustments. An item is a `package` (a mise bootstrap
+package key, such as `jq` or `pacman:jq`) or a `tool` (a mise tool). Its
+version is `latest`, a version, or, for a package, `absent`. An item can
+name an `os`, `linux` or `macos`: only hosts of that OS get it, and null
+means every OS. When two roles of a host declare the same item, the role
+whose name sorts last wins. An adjustment `set`s an item's version on one
+host, or `remove`s an item its roles declare.
 
-Only approved state reaches the desired-state tables. Every edit goes into
-the one draft change first. A change is a `draft`, `approved`, or
-`discarded`. Approving a draft writes its edits into the approved state,
-so it becomes each host's new `current`. Besides the one draft of edits,
-each host can have one open revert change (see
-[drift revert](#post-apihostsiddriftrevert)).
+Edits change the desired state at once. No host changes until an admin
+syncs it: see [syncs](#syncs).
+
+### The built-in role
+
+The role named `bootstrap` holds what sewa needs on a host. It starts
+with one item, the package `mise`. Every host has it, and it cannot be
+renamed or deleted. Admins can add packages to it, but not tools. An
+unprefixed package of the built-in role goes to the host's package
+manager: `pacman:` on Linux, `brew:` on macOS. So a fresh Mac gets
+`brew:mise`, which the agent installs before any mise item (see
+[native packages](#native-packages)). The controller creates the role
+when it migrates, and renames it back if its name changed.
 
 ### `GET /api/roles`
 
-Returns every role by name:
+Returns every role, the built-in role first, then by name:
 
 ```json
-[{ "id": "…", "name": "base", "created_at": "…",
-   "items": [], "proposed_items": [{ "kind": "package", "name": "jq", "version": "latest" }],
-   "hosts": [], "proposed_hosts": [{ "id": "…", "name": "build-1" }] }]
+[{ "id": "…", "name": "base", "builtin": false, "created_at": "…",
+   "items": [{ "kind": "package", "name": "jq", "version": "latest", "os": null }],
+   "hosts": [{ "id": "…", "name": "build-1" }] }]
 ```
+
+`hosts` lists the hosts that have the role. The built-in role lists every
+host.
 
 ### `GET /api/roles/{id}`
 
@@ -189,106 +217,147 @@ Returns one role in the same shape.
 
 ### `POST /api/roles`
 
-Takes `{"name": "base"}` and creates an empty role. An empty role changes no
-host, so this needs no change. Returns `201` with the role.
+Takes `{"name": "base"}` and creates an empty role. Returns `201` with the
+role. Roles cannot be deleted.
 
-### `GET /api/changes`
+### `PUT /api/roles/{id}`
 
-Returns every change, newest first:
+Replaces the role's name and items:
 
 ```json
-[{ "id": "…", "status": "draft", "created_at": "…", "created_by": "…",
-   "closed_at": null, "edit_count": 2, "revert_host": null }]
+{ "name": "base", "items": [
+  { "kind": "package", "name": "jq", "version": "latest" },
+  { "kind": "tool", "name": "node", "version": "24", "os": "macos" }
+] }
 ```
 
-`revert_host` is `{"id": "…", "name": "…"}` for a revert change.
+Returns the role. `400` `invalid_name`, `invalid_item`, `duplicate_item`,
+`too_many_items` (more than 500), or `bootstrap_packages_only`; `409`
+`name_taken`, or `builtin_role` for a rename of the built-in role.
+Records `role.saved` with the name and the items `added`, `removed`, and
+`changed` (a new version or OS), and `renamed_from` after a rename.
 
-### `POST /api/changes/draft/edits`
+## Syncs
 
-Adds one edit to the draft change, and creates the draft when there is
-none. Returns `201` with the change. The body is one of:
+A sync brings the hosts an admin picks to their desired state. Each
+agent plans its `current` config whenever it changes, so a sync reads the
+plans the agents already sent. The admin signs the plans with a passkey,
+and each agent checks the signature and applies its own plan.
+
+A host's `step` in a sync is:
+
+- `picked`: not signed yet. Its `plan` is the agent's last plan of
+  `current`.
+- `in_sync`: at the signature, its plan had nothing to do.
+- `skipped`: at the signature, it had no plan to sign: it was offline,
+  had not planned its config yet, or its plan failed.
+- `waiting`: signed. Its agent has not reported yet.
+- `applied`, `failed`, or `replan` (the plan changed before the agent
+  applied it, so nothing ran): what the agent reported. A `failed` or
+  `replan` host can be signed again.
+
+The sync's `status` is `applying` while a host waits, `planning` while a
+picked, connected host has no plan of its config, `ready` while a picked
+host has changes to sign, and `done` otherwise.
+
+### `POST /api/syncs`
+
+Takes `{"hosts": ["<host id>", …]}` and starts a sync. Every host must be
+enrolled. Returns `201` with the sync. `400` `no_hosts` or
+`unknown_host`. Records `sync.created` per host.
+
+### `GET /api/syncs`
+
+Returns the 20 newest syncs:
 
 ```json
-{ "op": "role_item_set", "role": "…", "kind": "package", "name": "jq", "version": "latest" }
-{ "op": "role_item_remove", "role": "…", "kind": "package", "name": "jq" }
-{ "op": "host_role_add", "host": "…", "role": "…" }
-{ "op": "host_role_remove", "host": "…", "role": "…" }
-{ "op": "host_item_set", "host": "…", "kind": "tool", "name": "node", "version": "22" }
-{ "op": "host_item_remove", "host": "…", "kind": "package", "name": "jq" }
-{ "op": "host_item_reset", "host": "…", "kind": "package", "name": "jq" }
+[{ "id": "…", "created_at": "…", "created_by": "…", "status": "done", "host_count": 3 }]
 ```
 
-`host_item_reset` drops the host's adjustment, so its roles decide again.
+### `GET /api/syncs/edits`
 
-### `GET /api/changes/{id}`
-
-Returns the change, its edits, and each host it affects. A draft lists
-the hosts whose config it alters. A closed change lists the hosts that
-planned it.
+Returns the edits since the last sync started, oldest first, at most 200:
 
 ```json
-{ "id": "…", "status": "draft", "…": "…",
-  "edits": [{ "id": 1, "at": "…", "by": "…", "edit": { "op": "…" } }],
-  "hosts": [{ "id": "…", "name": "build-1", "status": "connected",
-              "current_config": "…", "proposed_config": "…",
+{ "since": "…",
+  "edits": [{ "id": 12, "at": "…", "kind": "role.saved",
+              "role": { "id": "…", "name": "base" }, "host": null, "data": {} }] }
+```
+
+`since` is null before the first sync. The edits are the `role.saved`,
+`host.roles_set`, `host.items_set`, and `drift.adopted` events.
+
+### `GET /api/syncs/{id}`
+
+```json
+{ "id": "…", "created_at": "…", "created_by": "…", "status": "applying",
+  "hosts": [{ "id": "…", "name": "build-1", "os": "linux", "status": "connected",
+              "last_seen_at": "…", "roles": [{ "id": "…", "name": "base" }],
+              "step": "failed",
               "plan": { "config_hash": "…", "plan_hash": "…", "exit_code": 2,
                         "plan": {}, "error": null, "reported_at": "…", "received_at": null,
                         "stale": false },
-              "result": { "status": "failed", "plan_hash": "…", "log": "…", "reported_at": "…",
+              "result": { "plan_hash": "…", "log": "…", "reported_at": "…",
                           "received_at": null } }],
   "approvals": [{ "id": "…", "by": "…", "passkey": "Laptop", "created_at": "…", "host_count": 2 }] }
 ```
 
-`plan` is null until the agent reports one. `result` is null until the
-change is approved for the host. Its `status` is `waiting` until the agent
-reports, then `applied`, `failed`, or `replan`: the plan changed before
-the agent applied it, so nothing was applied and the host needs a new
-approval. `log` is the tail of `mise bootstrap`, at most 32 KiB.
+`plan` is null until the agent plans. `stale` is true when the plan is of
+an older config, so a new plan is on its way. `result` is null until the
+host is signed. `log` is the tail of the apply, at most 64 KiB.
 `reported_at` and `received_at` work as in a plan.
 
-### `POST /api/changes/{id}/discard`
+### `POST /api/syncs/{id}/approval`
 
-Closes a draft without applying it. Returns the change.
-
-### `POST /api/changes/{id}/approval`
-
-Returns what an approval of the change signs now:
+Returns what a signature signs now. The optional body
+`{"hosts": ["<host id>"]}` limits it to those hosts, for example to retry
+one failed host.
 
 ```json
 { "challenge": "<base64url>", "rp_id": "sewa.example.com",
   "allow_credentials": ["<base64url>"], "signed_text": "sewa approval v1\n…",
-  "change_id": "…",
+  "change_id": "<sync id>",
   "hosts": [{ "host_id": "…", "instance_uid": "…", "config_hash": "…", "plan_hash": "…" }] }
 ```
 
-The hosts are each host whose config a draft changes, with its plan of
-`change/<id>`; the one host of a revert, with its plan of `current`; or,
-for an approved change, the hosts whose result is `replan`, with their
-plan of `current`. `signed_text` is:
+The hosts are those in step `picked`, `failed`, or `replan` with an agent
+and a plan of their current config that has changes (exit code 2).
+`change_id` holds the sync id: agents read this field. `signed_text` is:
 
 ```text
 sewa approval v1
-change <change id>
+change <sync id>
 host <host id> instance <agent instance uid> config <config hash> plan <plan hash>
 ```
 
 with one `host` line per host, sorted by host id, each ending in a
 newline. `challenge` is its SHA-256. `allow_credentials` lists the
-signed-in user's passkeys.
+signed-in user's passkeys. `409` `no_passkey`, or `nothing_to_approve`
+when no host has changes to sign and no picked host is in sync. With
+only hosts in sync, `hosts` is empty and the signature marks them.
 
-### `POST /api/changes/{id}/approve`
+### `POST /api/syncs/{id}/approve`
 
-Takes the WebAuthn assertion of the challenge, as unpadded base64url:
+Takes the WebAuthn assertion of the challenge, as unpadded base64url, and
+the same `hosts` as the approval call:
 
 ```json
-{ "credential_id": "…", "authenticator_data": "…", "client_data_json": "…", "signature": "…" }
+{ "credential_id": "…", "authenticator_data": "…", "client_data_json": "…", "signature": "…",
+  "hosts": null }
 ```
 
 The controller checks it as an agent does, against the signed-in user's
 passkeys, and checks that the plans did not change. It stores the
-approval and the assertion, writes a draft's edits into the approved
-state, marks the change `approved`, and sets each host's result to
-`waiting`. Returns the change. Records `change.approved` per host.
+approval and the assertion, and sets each signed host to `waiting`.
+Picked hosts in sync go to `in_sync`, and the other picked hosts to
+`skipped`. Returns the sync. Records `sync.approved` per signed host.
+
+## Instance
+
+### `GET /api/instance`
+
+Returns `{"address": "<SEWA_PUBLIC_URL>"}`, which the web app shows in its
+header.
 
 ## Passkeys
 
@@ -387,19 +456,15 @@ empty body. Each message records when the host was last seen, and
 
 #### Remote config
 
-The controller sends each host its mise bootstrap configs as
-`remote_config`. Each is a file of the config map, with content type
-`application/toml`:
+The controller sends each host its desired state as `remote_config`: one
+file of the config map, `current`, with content type `application/toml`.
+It changes as soon as an admin edits a role or the host, and the agent
+plans it, but applies it only with a signed sync.
 
-- `current`: the approved desired state. It has only a header until
-  something is approved.
-- `change/<change id>`: the draft change's proposed state, when the draft
-  alters the host's config.
-
-`config_hash` is the SHA-256 of the names and the hex SHA-256 of each body.
+`config_hash` is the SHA-256 of the name and the hex SHA-256 of the body.
 The controller sends `remote_config` only when the hash differs from the
 agent's `remote_config_status.last_remote_config_hash`, so an agent that
-was offline gets the configs on its next message.
+was offline gets the config on its next message.
 
 The agent writes each config to `<state dir>/configs/<current |
 change-<id>>/mise.toml` and runs
@@ -427,7 +492,7 @@ and this JSON as `data`:
 
 ```json
 {
-  "config": "change/…",
+  "config": "current",
   "config_hash": "<hex SHA-256 of the config body>",
   "plan_hash": "<hex SHA-256 of mise's JSON output>",
   "exit_code": 2,
@@ -444,8 +509,9 @@ and this JSON as `data`:
   macOS.
 - `at` is when the agent planned, in Unix milliseconds by its clock. The
   controller dates the plan with it, but never later than when it got it.
-- The controller keeps the last plan of each config. It drops plans of
-  unknown changes, and plans older than the one it keeps.
+- The controller keeps the last plan of `current`. It drops plans of other
+  configs, which agents from before syncs may send, and plans older than
+  the one it keeps.
 
 #### Custom message `io.sewa.approval`
 
@@ -454,7 +520,7 @@ the controller sends the host's oldest approval it has not reported on, as
 type `approval` with the approval as JSON `data`:
 
 ```json
-{ "approval_id": "…", "change_id": "…",
+{ "approval_id": "…", "change_id": "<sync id>",
   "hosts": [{ "host_id": "…", "instance_uid": "…", "config_hash": "…", "plan_hash": "…" }],
   "assertion": { "credential_id": "…", "authenticator_data": "…",
                  "client_data_json": "…", "signature": "…" } }
@@ -511,11 +577,12 @@ The controller appends an event when a host is created, enrolls, connects,
 and disconnects (`host.created`, `host.enrolled`, `host.connected`,
 `host.disconnected`). When a host speaks after more than 90 seconds of
 silence, it appends `host.offline` dated from the start of the silence,
-with `data.from` and `data.until`. It also appends `role.created`, `change.created`,
-`change.edited` (one per edit), and `change.discarded`, which name the role
-or change and, for host edits, the host. `drift.detected` is appended once
+with `data.from` and `data.until`. It also appends `role.created` and `role.saved`, which name the
+role, and `host.roles_set` and `host.items_set` for host edits. `drift.detected` is appended once
 per new drift: when a plan of `current` exits 2 with a plan hash other than
-the last drift's. A plan that exits 0 ends the drift. Approvals add
-`passkey.registered`, `change.approved` (per host), `plan.applied`,
-`apply.failed`, `apply.replan`, `drift.reverted`, `drift.adopted`, and
-`drift.ignored`. The `events` table refuses updates and deletes.
+the last drift's. A plan that exits 0 ends the drift. Syncs add
+`sync.created` and `sync.approved` (per host), and the agents' `plan.applied`,
+`apply.failed`, and `apply.replan`, which name the sync. Passkeys add
+`passkey.registered`, and drift actions `drift.adopted` and
+`drift.ignored`. Events from before syncs keep their old kinds, such as
+`change.approved`. The `events` table refuses updates and deletes.

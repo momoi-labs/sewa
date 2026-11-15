@@ -1,10 +1,8 @@
 //! What a person can do about a host's drift, under
 //! `/api/hosts/{id}/drift`. Each action records an event.
 //!
-//! - Revert opens a revert change: approving it applies the host's
-//!   approved state again, with the plan that fixes the drift.
 //! - Adopt adds an undeclared package to a role or to the host's
-//!   adjustments, as an edit of the draft.
+//!   adjustments. A sync of the host reverts the rest of its drift.
 //! - Ignore hides the drift and the undeclared packages of now, until the
 //!   drift changes or another package shows up.
 
@@ -15,12 +13,11 @@ use serde::Deserialize;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::changes::{self, Change};
-use crate::desired::{Edit, Kind};
+use crate::desired::{self, Edit, Item, Kind};
 use crate::error::{ApiResult, Failure};
 use crate::events::{self, About};
 use crate::whois::Identity;
+use crate::{AppState, roles};
 
 fn host_id(id: &str) -> ApiResult<Uuid> {
     id.parse()
@@ -38,58 +35,6 @@ async fn lock(connection: &mut PgConnection, host: Uuid) -> ApiResult<()> {
         .ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))
 }
 
-/// `POST /api/hosts/{id}/drift/revert`: opens the host's revert change,
-/// or returns the one already open. Records `drift.reverted`.
-pub async fn revert(
-    State(state): State<AppState>,
-    Extension(identity): Extension<Identity>,
-    Path(id): Path<String>,
-) -> ApiResult<(StatusCode, Json<Change>)> {
-    let host = host_id(&id)?;
-    let mut transaction = state.pool.begin().await?;
-    lock(&mut transaction, host).await?;
-    let open: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM changes WHERE status = 'draft' AND revert_host = $1")
-            .bind(host)
-            .fetch_optional(&mut *transaction)
-            .await?;
-    let (change, status) = match open {
-        Some(change) => (change, StatusCode::OK),
-        None => {
-            let change: Uuid = sqlx::query_scalar(
-                "INSERT INTO changes (created_by, revert_host) VALUES ($1, $2) RETURNING id",
-            )
-            .bind(&identity.login)
-            .bind(host)
-            .fetch_one(&mut *transaction)
-            .await?;
-            let about = About {
-                host: Some(host),
-                change: Some(change),
-                role: None,
-            };
-            events::record_about(
-                &mut transaction,
-                about,
-                events::CHANGE_CREATED,
-                serde_json::json!({ "by": identity.login }),
-            )
-            .await?;
-            events::record_about(
-                &mut transaction,
-                about,
-                events::DRIFT_REVERTED,
-                serde_json::json!({ "by": identity.login }),
-            )
-            .await?;
-            (change, StatusCode::CREATED)
-        }
-    };
-    let change = changes::load(&mut transaction, change).await?;
-    transaction.commit().await?;
-    Ok((status, Json(change)))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct Adopt {
     /// The package, as the package manager names it.
@@ -99,48 +44,64 @@ pub struct Adopt {
 }
 
 /// `POST /api/hosts/{id}/drift/adopt`: adds an undeclared package, at
-/// version `latest`, to a role or to the host's adjustments, as an edit of
-/// the draft. Records `drift.adopted`. Returns the draft.
+/// version `latest`, to a role or to the host's adjustments. A package the
+/// role already has keeps its version. 400 `invalid_item` or
+/// `unknown_role`. Records `drift.adopted` and returns 204. The host gets
+/// the package at its next sync.
 pub async fn adopt(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
     Path(id): Path<String>,
     Json(adopt): Json<Adopt>,
-) -> ApiResult<(StatusCode, Json<Change>)> {
+) -> ApiResult<StatusCode> {
     let host = host_id(&id)?;
     let mut transaction = state.pool.begin().await?;
     lock(&mut transaction, host).await?;
     let name = adopt.package.trim().to_owned();
-    let version = "latest".to_owned();
-    let edit = match adopt.role {
-        Some(role) => Edit::RoleItemSet {
-            role,
-            kind: Kind::Package,
-            name: name.clone(),
-            version,
-        },
-        None => Edit::HostItemSet {
-            host,
-            kind: Kind::Package,
-            name: name.clone(),
-            version,
-        },
+    let item = Item {
+        kind: Kind::Package,
+        name: name.clone(),
+        version: "latest".to_owned(),
+        os: None,
     };
-    let change = changes::add_edit_in(&mut transaction, &identity.login, &edit).await?;
+    if !item.is_valid() {
+        return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_item"));
+    }
+    match adopt.role {
+        Some(role) => {
+            roles::known(&mut transaction, &[role]).await?;
+            sqlx::query(
+                "INSERT INTO role_items (role_id, kind, name, version)
+                 VALUES ($1, 'package', $2, 'latest')
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(role)
+            .bind(&name)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        None => {
+            let edit = Edit::HostItemSet {
+                kind: Kind::Package,
+                name: name.clone(),
+                version: item.version,
+            };
+            desired::save(&mut transaction, host, &edit).await?;
+        }
+    }
     events::record_about(
         &mut transaction,
         About {
             host: Some(host),
-            change: Some(change),
+            sync: None,
             role: adopt.role,
         },
         events::DRIFT_ADOPTED,
         serde_json::json!({ "by": identity.login, "package": name, "role": adopt.role }),
     )
     .await?;
-    let change = changes::load(&mut transaction, change).await?;
     transaction.commit().await?;
-    Ok((StatusCode::CREATED, Json(change)))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/hosts/{id}/drift/ignore`: hides the host's drift and its
