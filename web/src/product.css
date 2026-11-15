@@ -44,3 +44,14 @@
 .host-picker { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-xs); }
 .host-picker-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; cursor: pointer; }
 .host-picker-name { font-weight: var(--type-weight-medium); min-width: 8rem; }
+
+/* A chip in a ChipInput scrolls when it is wider than the field. Its remove
+   button stays on the chip's end edge so it never scrolls out of view. */
+.chip-input .chip:not(.filter-chip) > [data-slot="chip-remove"] {
+  position: sticky; inset-inline-end: 0;
+  background: inherit;
+  box-shadow: calc(var(--spacing-xs) * -1) 0 0 0 var(--color-secondary);
+}
+.chip-input .chip:not(.filter-chip)[data-state="invalid"] > [data-slot="chip-remove"] {
+  box-shadow: calc(var(--spacing-xs) * -1) 0 0 0 var(--color-danger-surface);
+}
