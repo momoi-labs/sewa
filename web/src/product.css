@@ -6,8 +6,16 @@
 .apply-log { max-block-size: calc(var(--spacing-4xl) * 5); }
 
 /* Header C: the brand slot is tinted with the accent surface and shows the
-   instance address under the name. On a phone the drawer shows it. */
+   instance address under the name. On a phone the drawer shows it.
+   The sidebar header and the top bar share one bar height, so their bottoms
+   line up: border-box, no block padding, content centered. */
 .sidebar-header { background: var(--color-accent-surface); }
+.app-shell { --bar-height: calc(var(--size-control-lg) + var(--spacing-lg) + var(--spacing-xs)); }
+.sidebar-header,
+.app-shell > :is(main, [data-slot="app-shell-main"]) > .topbar {
+  box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
+}
+.sidebar-header { align-content: center; }
 .brand-slot { gap: var(--spacing-sm); color: var(--color-foreground); text-decoration: none; }
 .brand-slot .sewa-mark { height: var(--size-control-lg); }
 .brand-slot-text { min-width: 0; line-height: 1.15; display: grid; }
