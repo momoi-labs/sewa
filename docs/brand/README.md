@@ -38,6 +38,8 @@ background.
 | `wordmark.svg` | The wordmark alone, in `currentColor`. |
 | `cat-mono.svg` | The cat alone, in `currentColor`. |
 | `favicon.svg` | The favicon, a copy of `web/public/favicon.svg`. Keep the two the same. |
+| `error-403.svg`, `error-403-dark.svg` | An angry cat guards the server box: access denied (403). |
+| `error-500.svg`, `error-500-dark.svg` | A worried cat with a wrench on a cracked, taped box: the server failed (500, other 5xx, or no answer). |
 | `usage.html` | A page that shows each file on a light and a dark background. Open it in a browser. |
 
 ## In the web app
@@ -49,6 +51,10 @@ background.
 - `SewaMark` holds the paths of `mark.svg`. Keep the two the same.
 - `web/public/favicon.svg` is the same emblem in a square viewBox. The
   ivory halo appears when the system uses a dark theme.
+- `ErrorPage` shows `error-403` or `error-500` above the status code, a
+  title, one line, and one action. The app loads copies from `web/public/`.
+  Keep them the same as the files here. Both variants load, and
+  `ErrorPage.css` shows the one for the app's theme.
 
 ## Use
 
@@ -67,3 +73,21 @@ background.
   source image and trace it again.
 - Nunito is by the Nunito Project Authors and is under the SIL Open Font
   License 1.1. The files hold the outlines of four letters, not the font.
+
+## Error illustrations
+
+- Use `error-403` when access is denied, and `error-500` for a 5xx or a
+  controller that does not answer. Do not use them for a 404 or an empty list.
+- Use one per page, 160 to 240 px high, centered above the copy. Do not use
+  them as icons or below 120 px: the small parts stop reading.
+- Put the code, title, and text in the page, never in the art. The files have
+  no text.
+- Pick the file by the background: the light file on light, the `-dark` file
+  on dark. Do not recolor them.
+- They are traced like the emblem, with the same steps, from the error-page
+  reference: two cats over the captions "403" and "500". The captions and a
+  mouse cursor in the screenshot were left out: the crop stops above the
+  captions, and the cursor was painted over with the box color before the
+  trace. Light tones that touch the background, like the ground shadow, were
+  dropped. The colors are ink, sage, white, and mist (`#E7F3E3`) for the
+  smoke. The `-dark` files add the ivory halo.

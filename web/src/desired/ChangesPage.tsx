@@ -17,6 +17,7 @@ import { Link } from '@tanstack/react-router';
 
 import { changesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
+import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { formatDateTime } from '../format';
 import { ChangeStatusBadge } from './ChangeStatusBadge';
@@ -26,6 +27,10 @@ const COLUMNS = 4;
 /** Every change, newest first. */
 export function ChangesPage() {
   const changes = useQuery(changesQuery);
+
+  if (changes.isError && !changes.data && isPageError(changes.error)) {
+    return <ErrorPage error={changes.error} onRetry={() => void changes.refetch()} />;
+  }
 
   return (
     <>

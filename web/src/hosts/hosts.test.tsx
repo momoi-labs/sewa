@@ -52,10 +52,22 @@ describe('hosts', () => {
     expect(await screen.findByText('No hosts yet')).toBeInTheDocument();
   });
 
-  it('says why the list cannot load', async () => {
+  it('shows the 403 page to a person who is not an admin', async () => {
     mockApi({ 'GET /api/hosts': { status: 403, body: { error: 'not_admin' } } });
     renderRoute('/');
-    expect(await screen.findByText('You are not an admin')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'The guardian said no' })).toBeInTheDocument();
+    expect(screen.getByText('Error 403')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+  });
+
+  it('shows the 500 page when the controller fails, and retries', async () => {
+    const user = userEvent.setup();
+    const calls = mockApi({ 'GET /api/hosts': { status: 500, body: { error: 'internal' } } });
+    renderRoute('/');
+    expect(await screen.findByRole('heading', { name: 'Something broke on our side' })).toBeInTheDocument();
+    expect(screen.getByText('Error 500')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(calls.filter((c) => c.path === '/api/hosts').length).toBeGreaterThan(1);
   });
 
   it('creates a host and shows its install command once', async () => {

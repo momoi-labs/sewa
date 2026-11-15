@@ -1,0 +1,12 @@
+/* The brand illustration of ErrorPage. Both variants load; the theme shows
+   one. The dark files wrap the art in an ivory halo, as in docs/brand/. See
+   Exceptions in docs/kiso.md. */
+.error-page-art {
+  block-size: calc(var(--spacing-4xl) * 3);
+  inline-size: auto;
+  max-inline-size: 100%;
+  margin-block-end: var(--spacing-md);
+}
+.error-page-art-dark { display: none; }
+[data-theme="dark"] .error-page-art { display: none; }
+[data-theme="dark"] .error-page-art-dark { display: block; }
