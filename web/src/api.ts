@@ -372,6 +372,7 @@ export type ApprovalOptions = {
   rp_id: string;
   allow_credentials: string[];
   signed_text: string;
+  approval_id: string;
   change_id: string;
   hosts: HostPlan[];
 };
@@ -388,6 +389,10 @@ export function syncApprovalOptions(sync: string, hosts?: string[]) {
   return api<ApprovalOptions>('POST', `/api/syncs/${encodeURIComponent(sync)}/approval`, hosts ? { hosts } : undefined);
 }
 
-export function approveSync(sync: string, assertion: Assertion, hosts?: string[]) {
-  return api<Sync>('POST', `/api/syncs/${encodeURIComponent(sync)}/approve`, { ...assertion, hosts: hosts ?? null });
+export function approveSync(sync: string, approvalId: string, assertion: Assertion, hosts?: string[]) {
+  return api<Sync>('POST', `/api/syncs/${encodeURIComponent(sync)}/approve`, {
+    ...assertion,
+    approval_id: approvalId,
+    hosts: hosts ?? null,
+  });
 }

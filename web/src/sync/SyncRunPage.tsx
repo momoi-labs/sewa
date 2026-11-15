@@ -88,7 +88,7 @@ function useSign(sync: Sync) {
       const options = await syncApprovalOptions(sync.id, hosts);
       // Sign only the plans the user reviewed.
       if (!sameTargets(sync, options.hosts, hosts)) throw new ApiFailure(409, 'stale_plans');
-      return approveSync(sync.id, await signApproval(options), hosts);
+      return approveSync(sync.id, options.approval_id, await signApproval(options), hosts);
     },
     onSuccess: async (next) => {
       queryClient.setQueryData(['syncs', next.id], next);

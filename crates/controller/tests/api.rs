@@ -1217,6 +1217,7 @@ async fn approve_with(
     }
     let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
     let mut body = serde_json::to_value(key.assert(RP_ID, ORIGIN, &challenge)).unwrap();
+    body["approval_id"] = options["approval_id"].clone();
     body["hosts"] = hosts.unwrap_or(Value::Null);
     json_call(
         app,
@@ -1294,8 +1295,17 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
         options["signed_text"]
             .as_str()
             .unwrap()
-            .starts_with(&format!("sewa approval v1\nchange {id}\n"))
+            .starts_with(&format!(
+                "sewa approval v1\napproval {}\nchange {id}\n",
+                options["approval_id"].as_str().unwrap()
+            ))
     );
+    // An approve body: the assertion and the id of the options it signs.
+    let approve_body = |assertion: &sewa_approval::Assertion| {
+        let mut body = serde_json::to_value(assertion).unwrap();
+        body["approval_id"] = options["approval_id"].clone();
+        body
+    };
     let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
     let approve_uri = format!("/api/syncs/{id}/approve");
     // A key the admin did not register, and a signature of other plans.
@@ -1305,7 +1315,7 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
         ADMIN,
         "POST",
         &approve_uri,
-        Some(serde_json::to_value(&forged).unwrap()),
+        Some(approve_body(&forged)),
     )
     .await;
     assert_eq!(
@@ -1321,7 +1331,7 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
         ADMIN,
         "POST",
         &approve_uri,
-        Some(serde_json::to_value(&stale).unwrap()),
+        Some(approve_body(&stale)),
     )
     .await;
     assert_eq!(
@@ -1336,7 +1346,7 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
         ADMIN,
         "POST",
         &approve_uri,
-        Some(serde_json::to_value(&assertion).unwrap()),
+        Some(approve_body(&assertion)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{sync}");
@@ -1370,7 +1380,7 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
             .is_none()
     );
     let outcome = Outcome {
-        approval_id: signed.approval_id,
+        approval_id: signed.approval.approval_id,
         change_id: signed.approval.change_id,
         status: "applied".to_owned(),
         plan_hash: Some("p1".to_owned()),
@@ -1398,6 +1408,45 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_signature_signs_once(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, instance) = planned_host(&app, "build-1").await;
+    let key = Authenticator::new(1);
+    register_passkey(&app, &key, ORIGIN).await;
+    let id = start_sync(&app, json!([host])).await;
+    let (_, options) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/syncs/{id}/approval"),
+        None,
+    )
+    .await;
+    let challenge = sewa_approval::decode(options["challenge"].as_str().unwrap()).unwrap();
+    let mut body = serde_json::to_value(key.assert(RP_ID, ORIGIN, &challenge)).unwrap();
+    body["approval_id"] = options["approval_id"].clone();
+    let approve_uri = format!("/api/syncs/{id}/approve");
+    let (status, _) = json_call(&app, ADMIN, "POST", &approve_uri, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    // The apply fails and changes nothing, so the same plan is up again.
+    let signed = sent_approval(&app, &credential, instance).await.unwrap();
+    let failed = Outcome {
+        approval_id: signed.approval.approval_id,
+        change_id: signed.approval.change_id,
+        status: "failed".to_owned(),
+        plan_hash: Some("p1".to_owned()),
+        log: "failed".to_owned(),
+        at: None,
+    };
+    opamp(&app, &credential, &outcome_message(instance, &failed)).await;
+    let (status, body) = json_call(&app, ADMIN, "POST", &approve_uri, Some(body)).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::CONFLICT, json!({ "error": "plans_changed" }))
+    );
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
 async fn a_failed_or_replanned_host_is_signed_again(pool: PgPool) {
     let app = app(pool.clone());
     let (host, credential, instance) = planned_host(&app, "build-1").await;
@@ -1411,7 +1460,7 @@ async fn a_failed_or_replanned_host_is_signed_again(pool: PgPool) {
     // One host's plan changed before it applied; the other failed.
     let signed = sent_approval(&app, &credential, instance).await.unwrap();
     let replan = Outcome {
-        approval_id: signed.approval_id,
+        approval_id: signed.approval.approval_id,
         change_id: signed.approval.change_id,
         status: "replan".to_owned(),
         plan_hash: Some("p2".to_owned()),
@@ -1423,7 +1472,7 @@ async fn a_failed_or_replanned_host_is_signed_again(pool: PgPool) {
         .await
         .unwrap();
     let failed = Outcome {
-        approval_id: other_signed.approval_id,
+        approval_id: other_signed.approval.approval_id,
         change_id: other_signed.approval.change_id,
         status: "failed".to_owned(),
         plan_hash: Some("p1".to_owned()),
@@ -1461,7 +1510,7 @@ async fn a_failed_or_replanned_host_is_signed_again(pool: PgPool) {
         .collect();
     assert_eq!(steps, ["waiting", "failed"]);
     let again = sent_approval(&app, &credential, instance).await.unwrap();
-    assert_ne!(again.approval_id, signed.approval_id);
+    assert_ne!(again.approval.approval_id, signed.approval.approval_id);
     assert_eq!(again.approval.hosts.len(), 1);
     assert_eq!(again.approval.hosts[0].plan_hash, "p2");
     assert!(

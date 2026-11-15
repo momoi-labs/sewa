@@ -57,6 +57,7 @@ const options: ApprovalOptions = {
   rp_id: 'controller.example',
   allow_credentials: [encode(new Uint8Array([9]))],
   signed_text: 'sewa approval v1\n',
+  approval_id: '55555555-5555-4555-8555-555555555555',
   change_id: ready.id,
   hosts: [{ host_id: host.id, instance_uid: 'u', config_hash: 'c1', plan_hash: 'p1' }],
 };
@@ -251,6 +252,7 @@ describe('sync', () => {
       authenticator_data: encode(new Uint8Array([4])),
       client_data_json: encode(new Uint8Array([5])),
       signature: encode(new Uint8Array([6])),
+      approval_id: options.approval_id,
       hosts: null,
     });
   });
