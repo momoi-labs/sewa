@@ -16,10 +16,10 @@
   box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
 }
 .sidebar-header { align-content: center; }
-/* A line under the brand, like the top bar's, and the nav items' own gap
-   above the first item, so it does not touch the line. */
+/* A line under the brand, like the top bar's, and the page body's gap
+   above the first nav item, so it does not touch the line. */
 .sidebar-header { border-block-end: 1px solid var(--color-border); }
-.sidebar-body { padding-block-start: var(--spacing-2xs); }
+.sidebar-body { padding-block-start: var(--spacing-sm); }
 .brand-slot { gap: var(--spacing-sm); color: var(--color-foreground); text-decoration: none; }
 .brand-slot .sewa-mark { height: var(--size-control-lg); }
 .brand-slot-text { min-width: 0; line-height: 1.15; display: grid; }
@@ -52,10 +52,23 @@
   background: var(--color-primary); color: var(--color-primary-foreground);
 }
 
-/* The host picker of a new sync: one row per host, the name first. */
-.host-picker { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-xs); }
-.host-picker-row { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; cursor: pointer; }
-.host-picker-name { font-weight: var(--type-weight-medium); min-width: 8rem; }
+/* The host picker of a new sync: filters on the left, the search, buttons
+   and table on the right. Below 1024px the filters sit above the table. */
+.host-picker { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; }
+.host-main { min-width: 0; }
+.host-filters { display: grid; gap: var(--spacing-md); }
+.host-filter { display: grid; gap: var(--spacing-xs); border: 0; margin: 0; padding: 0; min-width: 0; }
+.host-filter legend { padding: 0; margin-block-end: var(--spacing-xs); }
+.host-filter-row { display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer; }
+.host-filter-row .muted { margin-inline-start: auto; }
+.host-count { margin-inline-start: auto; }
+.host-table .host-check { inline-size: 2.5rem; }
+.host-table .host-name label { cursor: pointer; }
+.sort-button { margin-inline-start: calc(-1 * var(--spacing-sm)); font-weight: inherit; }
+@media (max-width: 1023px) {
+  .host-picker { grid-template-columns: minmax(0, 1fr); }
+  .host-filters { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+}
 
 /* A role's items: a search and an add field above tables grouped by
    source. The groups share column widths. The role form uses the page's

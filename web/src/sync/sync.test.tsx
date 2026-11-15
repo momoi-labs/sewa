@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalOptions, Host, HostState, Passkey, Sync, SyncHost } from '../api';
+import type { ApprovalOptions, Host, HostState, ListedHost, Passkey, Sync, SyncHost } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { decode, encode } from '../webauthn';
 
@@ -99,7 +99,10 @@ describe('sync', () => {
     const calls = mockApi({
       'GET /api/hosts': {
         status: 200,
-        body: [host, { ...host, id: '22222222-2222-4222-8222-222222222222', name: 'build-2', os: 'macos' }],
+        body: [
+          { ...host, roles: [] },
+          { ...host, roles: [], id: '22222222-2222-4222-8222-222222222222', name: 'build-2', os: 'macos' },
+        ],
       },
       'GET /api/syncs': { status: 200, body: [] },
       'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
@@ -113,17 +116,96 @@ describe('sync', () => {
     expect(await screen.findByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
   });
 
-  it('lists the hosts to pick in natural order', async () => {
-    const named = (name: string) => ({ ...host, id: `id-${name}`, name });
-    mockApi({
-      'GET /api/hosts': { status: 200, body: [named('build-10'), named('build-2'), named('build-1')] },
-      'GET /api/syncs': { status: 200, body: [] },
-      'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
+  describe('host picker', () => {
+    const listed = (name: string, extra: Partial<ListedHost> = {}): ListedHost => ({
+      ...host,
+      id: `id-${name}`,
+      name,
+      roles: [],
+      ...extra,
     });
-    renderRoute('/sync');
-    const list = await screen.findByRole('list', { name: 'Hosts to sync' });
-    const names = within(list).getAllByRole('listitem').map((item) => item.querySelector('.host-picker-name')?.textContent);
-    expect(names).toEqual(['build-1', 'build-2', 'build-10']);
+    const web = { id: 'role-web', name: 'web' };
+    const db = { id: 'role-db', name: 'db' };
+    const fleet = [
+      listed('build-10', { roles: [web] }),
+      listed('build-2', { roles: [web, db] }),
+      listed('build-1', { roles: [db], status: 'disconnected' }),
+      listed('mac-1', { os: 'macos', roles: [web] }),
+      listed('mac-2', { os: 'macos', status: 'disconnected' }),
+    ];
+    const open = async () => {
+      mockApi({
+        'GET /api/hosts': { status: 200, body: fleet },
+        'GET /api/syncs': { status: 200, body: [] },
+        'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
+      });
+      renderRoute('/sync');
+      await screen.findByRole('table', { name: 'Hosts to sync' });
+    };
+    const names = () =>
+      within(screen.getByRole('table', { name: 'Hosts to sync' }))
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => within(row).getAllByRole('cell')[1]!.textContent);
+    const filter = (label: string) => screen.getByRole('checkbox', { name: new RegExp(`^${label}`) });
+
+    it('lists the hosts in natural order with roles and counts', async () => {
+      await open();
+      expect(names()).toEqual(['build-1', 'build-2', 'build-10', 'mac-1', 'mac-2']);
+      expect(screen.getByText('5 of 5 selected')).toBeInTheDocument();
+      expect(filter('web')).toHaveAccessibleName(/^web\s*3$/);
+      expect(screen.getByText('web, db')).toBeInTheDocument();
+    });
+
+    it('combines values of a group with OR and groups with AND', async () => {
+      const user = userEvent.setup();
+      await open();
+      await user.click(filter('web'));
+      await user.click(filter('db'));
+      expect(names()).toEqual(['build-1', 'build-2', 'build-10', 'mac-1']);
+      await user.click(filter('Disconnected'));
+      expect(names()).toEqual(['build-1']);
+      await user.click(filter('macOS'));
+      expect(screen.queryByRole('table', { name: 'Hosts to sync' })).not.toBeInTheDocument();
+      expect(screen.getByText('No host matches the search and the filters.')).toBeInTheDocument();
+    });
+
+    it('acts on the shown hosts only', async () => {
+      const user = userEvent.setup();
+      await open();
+      await user.click(screen.getByRole('button', { name: 'None' }));
+      expect(screen.getByText('0 of 5 selected')).toBeInTheDocument();
+      await user.type(screen.getByRole('searchbox', { name: 'Filter hosts by name' }), 'build');
+      await user.click(screen.getByRole('button', { name: 'All' }));
+      expect(screen.getByText('3 of 5 selected')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'All macOS' }));
+      expect(screen.getByText('0 of 5 selected')).toBeInTheDocument();
+      await user.clear(screen.getByRole('searchbox', { name: 'Filter hosts by name' }));
+      expect(screen.getByRole('checkbox', { name: 'mac-1' })).not.toBeChecked();
+    });
+
+    it('sorts by a column and reverses on a second click', async () => {
+      const user = userEvent.setup();
+      await open();
+      await user.click(screen.getByRole('button', { name: 'Status' }));
+      expect(names()).toEqual(['build-1', 'mac-2', 'build-2', 'build-10', 'mac-1']);
+      await user.click(screen.getByRole('button', { name: 'Status' }));
+      expect(names()).toEqual(['mac-1', 'build-10', 'build-2', 'mac-2', 'build-1']);
+      expect(screen.getByRole('columnheader', { name: 'Status' })).toHaveAttribute('aria-sort', 'descending');
+    });
+
+    it('shows the mixed state in the header checkbox', async () => {
+      const user = userEvent.setup();
+      await open();
+      const header = screen.getByRole('checkbox', { name: 'Select the shown hosts' });
+      expect(header).toBeChecked();
+      await user.click(screen.getByRole('checkbox', { name: 'mac-1' }));
+      expect(header).toHaveAttribute('aria-checked', 'mixed');
+      await user.click(header);
+      expect(header).toBeChecked();
+      await user.click(header);
+      expect(screen.getByText('0 of 5 selected')).toBeInTheDocument();
+    });
   });
 
   it('signs the plans with a passkey and sends the assertion', async () => {
@@ -201,6 +283,21 @@ describe('sync', () => {
         hosts: ['22222222-2222-4222-8222-222222222222'],
       }),
     );
+  });
+
+  it('sums up the picked hosts in one line and opens their names', async () => {
+    const user = userEvent.setup();
+    const hosts = [
+      picked('a', 'build-10'),
+      picked('b', 'build-2', { status: 'disconnected' }),
+      picked('c', 'mac-1', { os: 'macos' }),
+    ];
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: { ...ready, hosts } } });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText('3 hosts: 2 Linux, 1 macOS, 1 disconnected.')).toBeInTheDocument();
+    expect(screen.queryByText('build-2, build-10, mac-1.')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Show all' }));
+    expect(screen.getByText('build-2, build-10, mac-1.')).toBeInTheDocument();
   });
 
   it('shows the plans by package and filters them by host', async () => {

@@ -6,7 +6,6 @@ import {
   Button,
   Card,
   CardContent,
-  Checkbox,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
@@ -24,13 +23,13 @@ import {
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { type ReactNode, useState } from 'react';
+import { useState } from 'react';
 
-import { createSync, type Host, hostsQuery, syncEditsQuery, syncsQuery } from '../api';
+import { createSync, hostsQuery, syncEditsQuery, syncsQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
-import { formatDateTime, osNames } from '../format';
-import { HostStatusBadge } from '../hosts/HostStatusBadge';
+import { formatDateTime } from '../format';
 import { byName } from './byPackage';
+import { HostPicker } from './HostPicker';
 import { describeEdit, plural } from './sync';
 
 const SHOWN_EDITS = 8;
@@ -161,59 +160,6 @@ function NewSync() {
       {edits.isError && <ErrorAlert error={edits.error} thing="edits" onRetry={() => void edits.refetch()} />}
       {mutation.isError && <ErrorAlert error={mutation.error} thing="sync" />}
       <StepList label="Sync progress" steps={steps} />
-    </div>
-  );
-}
-
-function HostPicker({
-  hosts,
-  chosen,
-  onChange,
-  action,
-}: {
-  hosts: Host[];
-  chosen: Set<string>;
-  onChange: (chosen: Set<string>) => void;
-  action: ReactNode;
-}) {
-  const pick = (filter: (host: Host) => boolean) => onChange(new Set(hosts.filter(filter).map((host) => host.id)));
-  return (
-    <div className="stack-sm">
-      <div className="row-wrap">
-        <Button type="button" size="sm" onClick={() => pick(() => true)}>
-          All
-        </Button>
-        <Button type="button" size="sm" onClick={() => pick((host) => host.os === 'linux')}>
-          All Linux
-        </Button>
-        <Button type="button" size="sm" onClick={() => pick((host) => host.os === 'macos')}>
-          All macOS
-        </Button>
-        <Button type="button" size="sm" onClick={() => pick(() => false)}>
-          None
-        </Button>
-      </div>
-      <ul className="host-picker" aria-label="Hosts to sync">
-        {hosts.map((host) => (
-          <li key={host.id}>
-            <label className="host-picker-row">
-              <Checkbox
-                checked={chosen.has(host.id)}
-                onCheckedChange={(checked) => {
-                  const next = new Set(chosen);
-                  if (checked === true) next.add(host.id);
-                  else next.delete(host.id);
-                  onChange(next);
-                }}
-              />
-              <span className="host-picker-name">{host.name}</span>
-              <span className="muted">{osNames[host.os]}</span>
-              <HostStatusBadge status={host.status} />
-            </label>
-          </li>
-        ))}
-      </ul>
-      <div className="row-wrap">{action}</div>
     </div>
   );
 }

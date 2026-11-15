@@ -26,6 +26,7 @@ import {
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
+import { useState } from 'react';
 
 import { approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
 import { ErrorAlert, errorCode } from '../components/ErrorAlert';
@@ -114,10 +115,7 @@ function Run({ sync }: { sync: Sync }) {
       label: 'Pick hosts',
       state: 'done',
       meta: plural(sync.hosts.length, 'host'),
-      detail: <p className="muted">{sync.hosts
-            .map((host) => host.name)
-            .sort(byName)
-            .join(', ')}.</p>,
+      detail: <PickedHosts hosts={sync.hosts} />,
     },
     {
       key: 'plans',
@@ -254,6 +252,38 @@ function Finished({ sync, nothing }: { sync: Sync; nothing: boolean }) {
         </AlertDescription>
       </AlertContent>
     </Alert>
+  );
+}
+
+/** The hosts of a started sync in one line: "12 hosts: 8 Linux, 4 macOS,
+ *  1 disconnected". "Show all" opens their names in natural order. */
+function PickedHosts({ hosts }: { hosts: SyncHost[] }) {
+  const [open, setOpen] = useState(false);
+  const count = (keep: (host: SyncHost) => boolean) => hosts.filter(keep).length;
+  const parts = [
+    [count((host) => host.os === 'linux'), 'Linux'],
+    [count((host) => host.os === 'macos'), 'macOS'],
+    [count((host) => host.status === 'disconnected'), 'disconnected'],
+  ]
+    .filter(([n]) => n !== 0)
+    .map(([n, label]) => `${n} ${label}`);
+  return (
+    <div className="stack-sm">
+      <p>
+        {plural(hosts.length, 'host')}
+        {parts.length > 0 && `: ${parts.join(', ')}`}.{' '}
+        <Button
+          type="button"
+          variant="ghost"
+          className="btn-link"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? 'Hide' : 'Show all'}
+        </Button>
+      </p>
+      {open && <p className="muted">{hosts.map((host) => host.name).sort(byName).join(', ')}.</p>}
+    </div>
   );
 }
 
