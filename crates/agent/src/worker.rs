@@ -470,11 +470,12 @@ mod tests {
         use sewa_approval::{Approval, Assertion, HostPlan, Pinned};
 
         use super::*;
+        use crate::native::{NO_HOMEBREW, Native};
         use crate::opamp::proto::{AgentConfigMap, AgentConfigObject};
 
         const RP_ID: &str = "sewa.example.com";
         const ORIGIN: &str = "https://sewa.example.com";
-        const BODY: &[u8] = b"[bootstrap.packages]\n\"pacman:ripgrep\" = \"latest\"\n";
+        const BODY: &[u8] = b"[tools]\nripgrep = \"latest\"\n";
 
         /// An agent whose mise is a fake: it prints `plan.json` as the
         /// plan, and only writes down an apply in `applied`. Nothing on
@@ -483,6 +484,7 @@ mod tests {
             _root: tempfile::TempDir,
             root: PathBuf,
             worker: Worker,
+            body: Vec<u8>,
             uid: Uuid,
             host: Uuid,
             key: Authenticator,
@@ -509,8 +511,27 @@ exit 1
             path
         }
 
+        /// A planner with the fake mise of `root`, and package managers that
+        /// do not exist: no test reaches this machine's brew or pacman.
+        fn planner(state: &State, root: &Path) -> Planner {
+            let mut planner = Planner::new(&state.dir, root.join("mise"));
+            planner.mise_fallbacks.clear();
+            planner.native = Native {
+                macos: false,
+                brew: vec![root.join("no-brew")],
+                pacman: vec![root.join("no-pacman")],
+            };
+            planner
+        }
+
         impl Fixture {
             fn new() -> Self {
+                Self::with(BODY, |_, planner| planner)
+            }
+
+            /// An agent with `body` as its current config, and the planner
+            /// `setup` makes of the default one.
+            fn with(body: &[u8], setup: impl FnOnce(&Path, Planner) -> Planner) -> Self {
                 let dir = tempfile::tempdir().unwrap();
                 let root = dir.path().to_owned();
                 fs::write(
@@ -528,13 +549,14 @@ exit 1
                     })
                     .unwrap();
                 let uid = Uuid::now_v7();
-                let planner = Planner::new(&state.dir, fake_mise(&root));
+                fake_mise(&root);
+                let planner = setup(&root, planner(&state, &root));
                 let mut worker = Worker::new(planner, state, uid);
                 let mut config_map = std::collections::HashMap::new();
                 config_map.insert(
                     CURRENT.to_owned(),
                     AgentConfigObject {
-                        body: BODY.to_vec(),
+                        body: body.to_vec(),
                         content_type: "application/toml".to_owned(),
                         ..Default::default()
                     },
@@ -548,6 +570,7 @@ exit 1
                     _root: dir,
                     root,
                     worker,
+                    body: body.to_vec(),
                     uid,
                     host: Uuid::now_v7(),
                     key,
@@ -562,7 +585,7 @@ exit 1
                     hosts: vec![HostPlan {
                         host_id: self.host,
                         instance_uid: self.uid,
-                        config_hash: plan::hash(BODY),
+                        config_hash: plan::hash(&self.body),
                         plan_hash: plan::hash(&plan),
                     }],
                 }
@@ -625,7 +648,7 @@ exit 1
             /// directory, as after a crash or a reboot.
             fn restart(&mut self) {
                 let state = State::new(self.root.join("state"));
-                let planner = Planner::new(&state.dir, self.root.join("mise"));
+                let planner = planner(&state, &self.root);
                 self.worker = Worker::new(planner, state, self.uid);
                 self.worker.boot();
             }
@@ -1015,6 +1038,159 @@ exit 1
                 .expect("a plan report");
             let report: serde_json::Value = serde_json::from_slice(&report.data).unwrap();
             assert_eq!(report["plan_hash"], fresh);
+        }
+        /// A Mac whose Homebrew is a fake: it lists the formulae in
+        /// `installed`, writes each command down in `brew.log`, and
+        /// installing `mise` puts the fake mise of `root` in place.
+        fn mac(root: &Path, mut planner: Planner) -> Planner {
+            let brew = root.join("brew");
+            let script = format!(
+                r#"#!/bin/sh
+echo "$*" >> '{log}'
+case "$1" in
+  list) cat '{installed}' 2>/dev/null; exit 0 ;;
+  install)
+    shift
+    for name in "$@"; do
+      echo "$name" >> '{installed}'
+      [ "$name" = mise ] && cp '{fake}' '{mise}'
+    done
+    exit 0 ;;
+esac
+exit 1
+"#,
+                log = root.join("brew.log").display(),
+                installed = root.join("installed").display(),
+                fake = root.join("mise").display(),
+                mise = root.join("bin/mise").display(),
+            );
+            fs::write(&brew, script).unwrap();
+            fs::set_permissions(&brew, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::create_dir_all(root.join("bin")).unwrap();
+            planner.mise = root.join("bin/mise");
+            planner.native = Native {
+                macos: true,
+                brew: vec![brew],
+                pacman: vec![],
+            };
+            planner
+        }
+
+        const MAC_BODY: &[u8] = b"[bootstrap.packages]\n\"brew:mise\" = \"latest\"\n\
+            \"brew:wget\" = \"latest\"\n\n[tools]\nripgrep = \"latest\"\n";
+
+        impl Fixture {
+            /// The approval of the plan the agent makes now.
+            fn approval_of_a_fresh_plan(&mut self) -> Approval {
+                let plan = self.worker.plan(CURRENT).unwrap();
+                let mut approval = self.approval();
+                approval.hosts[0].plan_hash = plan.plan_hash;
+                approval
+            }
+
+            fn brew_log(&self) -> Vec<String> {
+                fs::read_to_string(self.root.join("brew.log"))
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            }
+        }
+
+        fn actions(plan: &Plan) -> Vec<(String, String)> {
+            plan.plan.as_ref().unwrap()["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|resource| {
+                    (
+                        resource["id"]["name"].as_str().unwrap().to_owned(),
+                        resource["action"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_mac_without_mise_gets_mise_from_brew_then_the_mise_items() {
+            let mut fixture = Fixture::with(MAC_BODY, mac);
+            let plan = fixture.worker.plan(CURRENT).unwrap();
+            assert_eq!(plan.exit_code, 2, "{plan:?}");
+            assert_eq!(plan.error, None);
+            assert_eq!(
+                actions(&plan),
+                [
+                    ("brew:mise", "create"),
+                    ("brew:wget", "create"),
+                    ("ripgrep", "create"),
+                ]
+                .map(|(name, action)| (name.to_owned(), action.to_owned()))
+            );
+            let approval = fixture.approval_of_a_fresh_plan();
+            let assertion = fixture.sign(&approval);
+            let outcome = fixture.send(approval, assertion);
+            assert_eq!(outcome.status, "applied", "{outcome:?}");
+            let brew = fixture.brew_log();
+            assert!(brew.contains(&"install mise wget".to_owned()), "{brew:?}");
+            // mise came from brew in the same run, and applied its items.
+            assert_eq!(fixture.applies().len(), 1, "{:?}", outcome.log);
+            assert!(outcome.log.contains("install mise wget"), "{}", outcome.log);
+            assert!(outcome.log.contains("would apply"), "{}", outcome.log);
+            // The next plan has nothing left for brew.
+            let plan = fixture.worker.plan(CURRENT).unwrap();
+            assert_eq!(
+                actions(&plan)[0],
+                ("brew:mise".to_owned(), "noop".to_owned())
+            );
+        }
+
+        #[test]
+        fn a_mac_without_mise_applies_brew_items_and_fails_only_the_mise_items() {
+            let body = b"[bootstrap.packages]\n\"brew:wget\" = \"latest\"\n\n[tools]\nripgrep = \"latest\"\n";
+            let mut fixture = Fixture::with(body, mac);
+            let plan = fixture.worker.plan(CURRENT).unwrap();
+            assert_eq!(plan.exit_code, 2, "{plan:?}");
+            assert!(
+                plan.error.as_deref().unwrap().contains("mise is missing"),
+                "{plan:?}"
+            );
+            assert_eq!(
+                actions(&plan),
+                [("brew:wget", "create"), ("ripgrep", "unknown")]
+                    .map(|(name, action)| (name.to_owned(), action.to_owned()))
+            );
+            let approval = fixture.approval_of_a_fresh_plan();
+            let assertion = fixture.sign(&approval);
+            let outcome = fixture.send(approval, assertion);
+            assert_eq!(outcome.status, "failed", "{outcome:?}");
+            assert!(fixture.brew_log().contains(&"install wget".to_owned()));
+            assert!(fixture.applies().is_empty());
+            assert!(
+                outcome
+                    .log
+                    .contains("mise is missing; its items were not applied"),
+                "{}",
+                outcome.log
+            );
+        }
+
+        #[test]
+        fn a_mac_without_homebrew_plans_nothing_on_top() {
+            let mut fixture = Fixture::with(MAC_BODY, |root, planner| {
+                let mut planner = mac(root, planner);
+                planner.native.brew = vec![root.join("no-brew")];
+                planner
+            });
+            let plan = fixture.worker.plan(CURRENT).unwrap();
+            assert_eq!(plan.exit_code, 1);
+            assert_eq!(plan.error.as_deref(), Some(NO_HOMEBREW));
+            assert_eq!(
+                actions(&plan),
+                [("brew:mise", "unknown"), ("brew:wget", "unknown")]
+                    .map(|(name, action)| (name.to_owned(), action.to_owned()))
+            );
+            assert_eq!(health(&plan).status, "error");
+            assert!(fixture.applies().is_empty());
         }
     }
 }

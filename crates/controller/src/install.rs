@@ -13,7 +13,12 @@
 //!
 //! - Linux: a systemd unit that runs the agent as root.
 //! - macOS: a launchd daemon that runs the agent as a user the script asks
-//!   for. The default is the user who runs the installer.
+//!   for. The default is the user who runs the installer. When Homebrew is
+//!   missing, the script installs it for that user first with Homebrew's
+//!   own installer: the agent installs the built-in `bootstrap` role's
+//!   packages, mise first, with brew, and never installs Homebrew itself.
+//!   Homebrew refuses root and needs an admin user and the Xcode command
+//!   line tools; the script checks both and stops with what to do.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -145,6 +150,11 @@ set -eu
 
 server={server}
 bin=/usr/local/bin/sewa-agent
+# Where Homebrew may be, and the files the Homebrew install checks and uses.
+brew_paths='/opt/homebrew/bin/brew /usr/local/bin/brew'
+clt_git=/Library/Developer/CommandLineTools/usr/bin/git
+sudoers=/etc/sudoers.d/sewa-homebrew
+homebrew_installer=https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
 # The approver keys: the agent applies only what one of them signed.
 approvers={approvers}
 
@@ -187,6 +197,55 @@ UNIT
   echo "sewa: sewa-agent runs as root (systemd unit sewa-agent.service)"
 }}
 
+find_brew() {{
+  for path in $brew_paths; do
+    if [ -x "$path" ]; then
+      echo "$path"
+      return 0
+    fi
+  done
+  command -v brew 2>/dev/null
+}}
+
+# Installs Homebrew for the agent's user with Homebrew's own installer,
+# which refuses root. NONINTERACTIVE makes it use `sudo -n`, so the user
+# may run sudo without a password until it is done.
+ensure_homebrew() {{
+  hb_user=$1
+  hb_home=$2
+  if brew=$(find_brew); then
+    echo "sewa: Homebrew is installed at $brew"
+    return 0
+  fi
+  echo "sewa: Homebrew is missing; installing it for $hb_user"
+  [ "$(uname -m)" = arm64 ] \
+    || fail "Homebrew installs only on Apple Silicon; install it by hand, then run this again"
+  id -Gn "$hb_user" | tr ' ' '\n' | grep -qx admin \
+    || fail "Homebrew needs an admin user, and $hb_user is not one; make $hb_user an admin, or pick another user"
+  echo "sewa: $hb_user is an admin"
+  [ -x "$clt_git" ] \
+    || fail "Homebrew needs the Xcode command line tools; run xcode-select --install, then run this again"
+  echo "sewa: the Xcode command line tools are installed"
+  trap 'rm -f "$sudoers" "$sudoers.new"; rm -rf "$dir"' EXIT
+  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$hb_user" >"$sudoers.new"
+  chmod 0440 "$sudoers.new"
+  visudo -cf "$sudoers.new" >/dev/null \
+    || fail "cannot write a sudo rule for the Homebrew installer"
+  mv "$sudoers.new" "$sudoers"
+  echo "sewa: $hb_user may run sudo without a password until Homebrew is installed"
+  echo "sewa: downloading the Homebrew installer"
+  curl -fsSL -o "$dir/homebrew-install.sh" "$homebrew_installer" \
+    || fail "cannot download the Homebrew installer"
+  echo "sewa: running the Homebrew installer as $hb_user"
+  sudo -u "$hb_user" env NONINTERACTIVE=1 HOME="$hb_home" USER="$hb_user" \
+    /bin/bash "$dir/homebrew-install.sh" \
+    || fail "the Homebrew installer failed; see its output above"
+  rm -f "$sudoers"
+  echo "sewa: removed the temporary sudo rule"
+  brew=$(find_brew) || fail "Homebrew is still missing after its installer ran"
+  echo "sewa: Homebrew is installed at $brew"
+}}
+
 install_macos() {{
   default=${{SUDO_USER:-$(id -un)}}
   user=$default
@@ -197,6 +256,7 @@ install_macos() {{
   fi
   id -u "$user" >/dev/null 2>&1 || fail "no user $user"
   home=$(dscl . -read "/Users/$user" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')
+  ensure_homebrew "$user" "$home"
   sudo -H -u "$user" "$bin" enroll --server "$server" --token "$token"
   printf '%s\n' "$approvers" | sudo -H -u "$user" "$bin" pin
   plist=/Library/LaunchDaemons/sewa.agent.plist
@@ -363,5 +423,122 @@ mod tests {
                 "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824".to_owned()
             )]
         );
+    }
+    /// Runs the script's Homebrew step for a user `alex` on a fake Mac:
+    /// `uname`, `id`, `visudo`, `curl`, and `sudo` are fakes in `$tmp/bin`,
+    /// and the fake installer puts a fake `brew` in `$tmp/prefix/bin`.
+    /// `setup` runs after the fakes, before the step. Nothing touches this
+    /// machine's sudoers or Homebrew.
+    fn homebrew(setup: &str) -> (Output, std::path::PathBuf, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_owned();
+        let script = script("https://sewa.example.com", &[], &Pinned::default());
+        let body = script.strip_suffix("main \"$@\"\n").unwrap();
+        let prelude = format!(
+            r#"
+tmp='{root}'
+mkdir -p "$tmp/bin" "$tmp/work" "$tmp/sudoers.d" "$tmp/home"
+dir=$tmp/work
+brew_paths="$tmp/prefix/bin/brew"
+clt_git=$tmp/clt-git
+sudoers=$tmp/sudoers.d/sewa-homebrew
+homebrew_installer=https://example.com/install.sh
+fake() {{ printf '#!/bin/sh\n%s\n' "$2" >"$tmp/bin/$1"; chmod +x "$tmp/bin/$1"; }}
+fake uname 'echo arm64'
+fake id 'echo staff admin'
+fake visudo 'exit 0'
+fake sudo '[ "$1" = -u ] && shift 2; exec "$@"'
+fake curl 'echo "curl $*" >>"$tmp/curl.log"; while [ "$1" != -o ]; do shift; done; cp "$tmp/installer" "$2"'
+cat >"$tmp/installer" <<'INSTALLER'
+echo "installer: USER=$USER HOME=$HOME NONINTERACTIVE=$NONINTERACTIVE"
+[ -f "$sudoers" ] && echo "installer: the sudo rule is in place"
+mkdir -p "$tmp/prefix/bin"
+printf '#!/bin/sh\n' >"$tmp/prefix/bin/brew"
+chmod +x "$tmp/prefix/bin/brew"
+INSTALLER
+printf '#!/bin/sh\n' >"$clt_git"
+chmod +x "$clt_git"
+export tmp sudoers
+PATH="$tmp/bin:/usr/bin:/bin"
+{setup}
+ensure_homebrew alex "$tmp/home"
+"#,
+            root = root.display(),
+        );
+        let output = sh(&["-s"], &format!("{body}{prelude}"));
+        (output, root, tmp)
+    }
+
+    fn text(output: &Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    #[test]
+    fn a_mac_without_homebrew_gets_it_for_the_agent_user() {
+        let (output, root, _tmp) = homebrew("");
+        let text = text(&output);
+        assert!(output.status.success(), "{text}");
+        for line in [
+            "sewa: Homebrew is missing; installing it for alex",
+            "sewa: alex is an admin",
+            "sewa: the Xcode command line tools are installed",
+            "sewa: alex may run sudo without a password until Homebrew is installed",
+            "installer: the sudo rule is in place",
+            "sewa: removed the temporary sudo rule",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        assert!(text.contains(&format!(
+            "installer: USER=alex HOME={}/home NONINTERACTIVE=1",
+            root.display()
+        )));
+        assert!(text.contains(&format!(
+            "sewa: Homebrew is installed at {}/prefix/bin/brew",
+            root.display()
+        )));
+        assert!(!root.join("sudoers.d/sewa-homebrew").exists());
+    }
+
+    #[test]
+    fn a_mac_with_homebrew_keeps_it() {
+        let (output, root, _tmp) = homebrew(
+            r#"mkdir -p "$tmp/prefix/bin"; printf '#!/bin/sh\n' >"$tmp/prefix/bin/brew"; chmod +x "$tmp/prefix/bin/brew""#,
+        );
+        assert!(output.status.success(), "{}", text(&output));
+        assert!(text(&output).contains("sewa: Homebrew is installed at"));
+        assert!(!root.join("curl.log").exists(), "nothing is downloaded");
+    }
+
+    #[test]
+    fn homebrew_needs_an_admin_and_the_command_line_tools() {
+        for (setup, why) in [
+            (
+                "fake id 'echo staff'",
+                "Homebrew needs an admin user, and alex is not one",
+            ),
+            (r#"rm "$clt_git""#, "run xcode-select --install"),
+            (
+                "fake uname 'echo x86_64'",
+                "Homebrew installs only on Apple Silicon",
+            ),
+        ] {
+            let (output, root, _tmp) = homebrew(setup);
+            assert!(!output.status.success(), "{setup}");
+            assert!(text(&output).contains(why), "{why} in {}", text(&output));
+            assert!(!root.join("curl.log").exists(), "nothing is downloaded");
+            assert!(!root.join("sudoers.d/sewa-homebrew").exists());
+        }
+    }
+
+    #[test]
+    fn a_failed_homebrew_install_removes_the_sudo_rule() {
+        let (output, root, _tmp) = homebrew(r#"echo 'exit 1' >"$tmp/installer""#);
+        assert!(!output.status.success());
+        assert!(text(&output).contains("the Homebrew installer failed"));
+        assert!(!root.join("sudoers.d/sewa-homebrew").exists());
     }
 }

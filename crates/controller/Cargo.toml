@@ -37,6 +37,7 @@ protox.workspace = true
 [dev-dependencies]
 sewa-approval = { path = "../approval", features = ["testing"] }
 http-body-util.workspace = true
+tempfile.workspace = true
 tower.workspace = true
 
 [lints]
