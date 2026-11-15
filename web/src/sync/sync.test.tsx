@@ -335,6 +335,29 @@ describe('sync', () => {
     renderRoute(`/sync/${ready.id}`);
     expect(await screen.findByText('Nothing to sync')).toBeInTheDocument();
   });
+
+  it('shows the failed and offline plans when none can be signed', async () => {
+    const failed = { ...plan, exit_code: 1, plan: null, error: 'mise: cannot read the config' };
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: {
+          ...ready,
+          status: 'done',
+          hosts: [
+            picked(host.id, 'build-1', { plan: failed }),
+            picked('22222222-2222-4222-8222-222222222222', 'build-2', { plan: null, status: 'disconnected' }),
+          ],
+        },
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText('Nothing can be signed')).toBeInTheDocument();
+    expect(screen.queryByText('Nothing to sync')).not.toBeInTheDocument();
+    expect(screen.getByText(/No host has a plan to sign: 1 plan failed, 1 host offline/)).toBeInTheDocument();
+    expect(screen.getByText(/No plan to sign: Offline: build-2\. Plan failed: build-1/)).toBeInTheDocument();
+    expect(screen.getByText('mise: cannot read the config')).toBeInTheDocument();
+  });
 });
 
 describe('drift actions', () => {
