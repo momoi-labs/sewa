@@ -49,6 +49,12 @@ contract disagree, the contract wins and this file has a bug.
   before first paint from the saved choice, or from the OS mode when the
   choice is "system".
 - Panels come from `Card` and `TableFrame`, which render the panel shadow.
+- Only a top-level panel keeps the soft shadow. A panel inside another
+  panel has none: a table inside a card, such as the role item tables and
+  the sync plan tables, and a panel inside tabs. Set
+  `data-shadow-style="none"` on the nested `TableFrame`, `Card` or `Tabs`.
+  `frame="none"` alone does not remove the shadow, because a later, more
+  specific Kiso rule still sets it.
 
 ## Pattern choices
 

@@ -136,7 +136,7 @@ export function ItemTable({ value, onChange, suggestions, readOnly }: Props) {
                 </>
               }
             >
-              <TableFrame className="item-table">
+              <TableFrame className="item-table" data-shadow-style="none">
                 <Table density="compact" aria-label={group.label}>
                   <colgroup>
                     <col />
