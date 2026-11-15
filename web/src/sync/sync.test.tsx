@@ -58,7 +58,7 @@ const options: ApprovalOptions = {
   allow_credentials: [encode(new Uint8Array([9]))],
   signed_text: 'sewa approval v1\n',
   change_id: ready.id,
-  hosts: [{ host_id: host.id, instance_uid: 'u', config_hash: 'c1', plan_hash: 'p1aaaaaaaaaaaaaaaa' }],
+  hosts: [{ host_id: host.id, instance_uid: 'u', config_hash: 'c1', plan_hash: 'p1' }],
 };
 
 const realCredentials = Object.getOwnPropertyDescriptor(navigator, 'credentials');
@@ -265,7 +265,10 @@ describe('sync', () => {
     };
     const calls = mockApi({
       [`GET /api/syncs/${ready.id}`]: { status: 200, body: done },
-      [`POST /api/syncs/${ready.id}/approval`]: { status: 200, body: options },
+      [`POST /api/syncs/${ready.id}/approval`]: {
+        status: 200,
+        body: { ...options, hosts: [{ ...options.hosts[0]!, host_id: '22222222-2222-4222-8222-222222222222' }] },
+      },
       [`POST /api/syncs/${ready.id}/approve`]: { status: 200, body: done },
     });
     renderRoute(`/sync/${ready.id}`);
@@ -372,6 +375,23 @@ describe('sync', () => {
     expect(within(install).getByText('jq')).toBeInTheDocument();
     expect(screen.getByText('mise: tool not found: node@99')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
+  });
+
+  it('refuses to sign when the plans changed since the page loaded', async () => {
+    const user = userEvent.setup();
+    const { get } = authenticator();
+    const calls = mockApi({
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: ready },
+      [`POST /api/syncs/${ready.id}/approval`]: {
+        status: 200,
+        body: { ...options, hosts: [{ ...options.hosts[0]!, plan_hash: 'p2' }] },
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Sign and sync' }));
+    expect(await screen.findByText('The plans changed')).toBeInTheDocument();
+    expect(get).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.path.endsWith('/approve'))).toBe(false);
   });
 });
 

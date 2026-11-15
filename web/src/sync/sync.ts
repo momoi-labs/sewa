@@ -1,4 +1,4 @@
-import type { EditEntry, Sync, SyncHost } from '../api';
+import type { EditEntry, HostPlan, Sync, SyncHost } from '../api';
 
 function count(value: unknown, one: string, many: string): string | null {
   const n = Array.isArray(value) ? value.length : 0;
@@ -51,6 +51,25 @@ export function planState(host: SyncHost): PlanState {
     return host.plan.exit_code === 0 && !host.plan.error ? 'in_sync' : 'failed';
   }
   return host.status === 'connected' ? 'planning' : 'offline';
+}
+
+/** Whether the controller's approval targets are the plans on the page:
+ *  the same hosts, each with the config and plan the page shows. `only`
+ *  limits the page's side to those hosts, as for a retry. */
+export function sameTargets(sync: Sync, targets: HostPlan[], only?: string[]): boolean {
+  const shown = sync.hosts.filter(
+    (host) =>
+      (!only || only.includes(host.id)) &&
+      ['picked', 'failed', 'replan'].includes(host.step) &&
+      planState(host) === 'changes',
+  );
+  return (
+    shown.length === targets.length &&
+    targets.every((target) => {
+      const plan = shown.find((host) => host.id === target.host_id)?.plan;
+      return plan?.config_hash === target.config_hash && plan.plan_hash === target.plan_hash;
+    })
+  );
 }
 
 /** The hosts in each step, by name. */
