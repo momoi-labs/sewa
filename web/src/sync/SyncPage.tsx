@@ -30,6 +30,7 @@ import { createSync, type Host, hostsQuery, syncEditsQuery, syncsQuery } from '.
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatDateTime, osNames } from '../format';
 import { HostStatusBadge } from '../hosts/HostStatusBadge';
+import { byName } from './byPackage';
 import { describeEdit, plural } from './sync';
 
 const SHOWN_EDITS = 8;
@@ -75,7 +76,9 @@ export function SyncPage() {
 function NewSync() {
   const edits = useQuery(syncEditsQuery);
   const hosts = useQuery(hostsQuery);
-  const enrolled = (hosts.data ?? []).filter((host) => host.enrolled_at !== null);
+  const enrolled = (hosts.data ?? [])
+    .filter((host) => host.enrolled_at !== null)
+    .sort((a, b) => byName(a.name, b.name));
   const [picked, setPicked] = useState<Set<string> | null>(null);
   const chosen = picked ?? new Set(enrolled.map((host) => host.id));
   const queryClient = useQueryClient();

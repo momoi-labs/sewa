@@ -17,6 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@momoi-labs/kiso-react";
+import { Minus, Plus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 
 import type { SyncHost } from "../api";
@@ -30,10 +31,10 @@ import { plural } from "./sync";
 
 const ALL = "*";
 
-const sections: { change: Change; title: string }[] = [
-  { change: "install", title: "Install" },
-  { change: "update", title: "Update" },
-  { change: "remove", title: "Remove" },
+const sections: { change: Change; title: string; icon: typeof Plus }[] = [
+  { change: "install", title: "Install", icon: Plus },
+  { change: "update", title: "Update", icon: RefreshCw },
+  { change: "remove", title: "Remove", icon: Minus },
 ];
 
 const reasons = {
@@ -105,7 +106,8 @@ export function PlanByPackage({ hosts }: { hosts: SyncHost[] }) {
       )}
       {shown.map((section) => (
         <section key={section.change} className="stack-sm">
-          <h3 className="t-caps" id={`plan-${section.change}`}>
+          <h3 className="t-caps plan-heading" id={`plan-${section.change}`}>
+            <section.icon className="icon" aria-hidden="true" />
             {section.title} ({section.rows.length})
           </h3>
           <TableFrame className="plan-table" data-shadow-style="none">

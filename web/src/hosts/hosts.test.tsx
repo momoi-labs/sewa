@@ -31,6 +31,21 @@ const waiting: Host = {
 };
 
 describe('hosts', () => {
+  it('pulses the dot of a disconnected host only', async () => {
+    mockApi({
+      'GET /api/hosts': {
+        status: 200,
+        body: [connected, { ...connected, id: 'x2', name: 'build-3', status: 'disconnected' }, waiting],
+      },
+    });
+    renderRoute('/');
+    const dot = async (name: string) =>
+      (await screen.findByRole('link', { name })).closest('tr')!.querySelector('[data-slot="dot"]')!;
+    expect(await dot('build-3')).toHaveClass('dot-pulse');
+    expect(await dot('build-1')).not.toHaveClass('dot-pulse');
+    expect(await dot('laptop')).not.toHaveClass('dot-pulse');
+  });
+
   it('lists each host with its status, agent version and last report', async () => {
     mockApi({ 'GET /api/hosts': { status: 200, body: [connected, waiting] } });
     renderRoute('/');

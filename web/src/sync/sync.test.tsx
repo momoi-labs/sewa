@@ -113,6 +113,19 @@ describe('sync', () => {
     expect(await screen.findByRole('button', { name: 'Sign and sync' })).toBeInTheDocument();
   });
 
+  it('lists the hosts to pick in natural order', async () => {
+    const named = (name: string) => ({ ...host, id: `id-${name}`, name });
+    mockApi({
+      'GET /api/hosts': { status: 200, body: [named('build-10'), named('build-2'), named('build-1')] },
+      'GET /api/syncs': { status: 200, body: [] },
+      'GET /api/syncs/edits': { status: 200, body: { since: null, edits: [] } },
+    });
+    renderRoute('/sync');
+    const list = await screen.findByRole('list', { name: 'Hosts to sync' });
+    const names = within(list).getAllByRole('listitem').map((item) => item.querySelector('.host-picker-name')?.textContent);
+    expect(names).toEqual(['build-1', 'build-2', 'build-10']);
+  });
+
   it('signs the plans with a passkey and sends the assertion', async () => {
     const user = userEvent.setup();
     const { get } = authenticator();

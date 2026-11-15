@@ -106,6 +106,7 @@
    row is a card. See Exceptions in docs/kiso.md. */
 .plan-toolbar { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: start; }
 .plan-search { flex: 1 1 14rem; }
+.plan-heading { display: flex; align-items: center; gap: var(--spacing-sm); }
 .plan-host { flex: 0 1 14rem; min-width: 0; }
 .plan-table .table { table-layout: fixed; }
 .plan-col-manager { inline-size: 10rem; }

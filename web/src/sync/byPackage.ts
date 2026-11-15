@@ -18,7 +18,7 @@ export type PackageRow = {
 const changes: Record<string, Change> = { create: 'install', update: 'update', remove: 'remove' };
 
 /** Host names in natural order: build-2 before build-10. */
-const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
+export const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
 
 /** The manager of a plan resource, as the role page names it. */
 export function managerOf(kind: string, name: string): string {
