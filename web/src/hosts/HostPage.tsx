@@ -33,6 +33,7 @@ import type { ReactNode } from 'react';
 
 import { eventsQuery, type Host, type HostEvent, hostQuery, hostStateQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
+import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { Unknown } from '../components/Unknown';
 import { HostDesired, HostDrift } from '../desired/HostDesired';
@@ -48,6 +49,10 @@ export function HostPage() {
   const host = useQuery(hostQuery(hostId));
   const events = useQuery(eventsQuery(hostId));
   const state = useQuery(hostStateQuery(hostId));
+
+  if (host.isError && !host.data && isPageError(host.error)) {
+    return <ErrorPage error={host.error} onRetry={() => void host.refetch()} />;
+  }
 
   return (
     <>

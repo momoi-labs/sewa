@@ -16,7 +16,7 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only sizes Kiso leaves to the product, such as a LogView height. `web/src/components/SewaMark.css` holds the logo colors. |
+| Product CSS | `web/src/product.css`: only sizes Kiso leaves to the product, such as a LogView height. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 
@@ -26,6 +26,7 @@ contract disagree, the contract wins and this file has a bug.
 | `SewaMark` | The sewa emblem in the shell's brand. The brand kit is in `docs/brand/`. |
 | `HostStatusBadge` | A host's status: waiting, connected, or disconnected. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
+| `ErrorPage` | The screen when a page's data fails to load with `not_admin`, a 5xx, or no answer: a brand illustration, the code, a title, one line, and one action. |
 | `Unknown` | A missing value: a muted dash with a tooltip that says why. |
 | `SkeletonRows` | Table rows while a list loads. |
 | `NotFound` | The screen for an unknown path. |
@@ -69,6 +70,7 @@ contract disagree, the contract wins and this file has a bug.
 | Approve a change | Confirmations: a dialog that states what is signed and applied, and names the action. |
 | Adopt a package | CRUD: a small edit made in a dialog. |
 | Revert and Ignore drift | Plain actions on the host's Drift tab. Revert opens a change, which still needs an approval; Ignore only hides. |
+| Error page | Permission denied (403 `not_admin`): a locked EmptyState that replaces the page, with "Check again". Errors (5xx, no answer): the same composition with "Retry". Other load errors, and a failed refresh of data already on screen, keep `ErrorAlert`. |
 
 ## Exceptions
 
@@ -78,6 +80,14 @@ contract disagree, the contract wins and this file has a bug.
   read at that size. Its colors are the brand's, in `SewaMark.css`, not Kiso
   tokens, so it keeps its colors with any accent. Kiso needs a BrandMark for
   a product logo.
+- `ErrorPage` puts a brand illustration, about 192 px high, in an
+  EmptyState, and uses that composition for 5xx errors too. Kiso prefers a
+  small icon in EmptyState and an Alert for errors. The brand asks for the
+  illustrated page when the whole screen cannot load. The page keeps Kiso's
+  copy order (what, why, now), uses no danger color, and the 5xx page is an
+  `alert` region. The illustrations are the brand's files in
+  `web/public/`, not Kiso tokens. Kiso has no illustration size token, so the
+  height is `--spacing-4xl` times 3.
 
 ## Verify
 

@@ -36,6 +36,7 @@ import { useState } from 'react';
 
 import { hostsQuery, type Role, roleQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
+import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { compareItems, compareNamed } from './compare';
 import { DifferenceBadge } from './DifferenceBadge';
 import { DraftNotice } from './DraftNotice';
@@ -49,6 +50,10 @@ const route = getRouteApi('/roles/$roleId');
 export function RolePage() {
   const { roleId } = route.useParams();
   const role = useQuery(roleQuery(roleId));
+
+  if (role.isError && !role.data && isPageError(role.error)) {
+    return <ErrorPage error={role.error} onRetry={() => void role.refetch()} />;
+  }
 
   return (
     <>
