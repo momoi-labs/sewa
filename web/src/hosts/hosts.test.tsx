@@ -102,7 +102,8 @@ describe('hosts', () => {
     expect(await screen.findByRole('heading', { name: 'The controller did not answer' })).toBeInTheDocument();
     expect(screen.getByText('No answer')).toBeInTheDocument();
     const art = document.querySelector('img.error-page-art');
-    expect(art).toHaveAttribute('src', '/error-offline.svg');
+    expect(art).toHaveAttribute('data-art', 'surprised');
+    expect(art?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
   });
 
   it('creates a host and shows its install command once', async () => {
