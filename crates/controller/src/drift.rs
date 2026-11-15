@@ -46,8 +46,9 @@ pub struct Adopt {
 /// `POST /api/hosts/{id}/drift/adopt`: adds an undeclared package, at
 /// version `latest`, to a role or to the host's adjustments. A package the
 /// role already has keeps its version. 400 `invalid_item` or
-/// `unknown_role`. Records `drift.adopted` and returns 204. The host gets
-/// the package at its next sync.
+/// `unknown_role`; 409 `builtin_role` for the built-in role. Records
+/// `drift.adopted` and returns 204. The host gets the package at its next
+/// sync.
 pub async fn adopt(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -69,6 +70,7 @@ pub async fn adopt(
     }
     match adopt.role {
         Some(role) => {
+            roles::writable(&mut transaction, role).await?;
             roles::known(&mut transaction, &[role]).await?;
             sqlx::query(
                 "INSERT INTO role_items (role_id, kind, name, version)

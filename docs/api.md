@@ -32,7 +32,6 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 400 | `invalid_item` | An item name or version is empty, longer than 200 characters, has control characters or outer spaces, a tool is `absent`, or the OS is not `linux` or `macos`. |
 | 400 | `duplicate_item` | A role lists the same item twice. |
 | 400 | `too_many_items` | A role has more than 500 items. |
-| 400 | `bootstrap_packages_only` | The built-in role gets a tool. |
 | 400 | `invalid_edit` | A host edit has an invalid item. |
 | 400 | `too_many_edits` | More than 500 host edits at once. |
 | 400 | `unknown_role` | The edit names a role that does not exist, or the built-in role. |
@@ -43,7 +42,7 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 403 | `not_admin` | The caller's login is not in `SEWA_ADMINS`. |
 | 404 | `not_found` | The host, role, or sync does not exist, or the path under `/api` is unknown. |
 | 409 | `name_taken` | A host or role with this name exists. |
-| 409 | `builtin_role` | A save renames the built-in role. |
+| 409 | `builtin_role` | A save or an adopt writes to the built-in role. sewa manages it, so it is read-only. |
 | 409 | `passkey_exists` | The credential is saved already. |
 | 409 | `no_passkey` | The signed-in user has no passkey to approve with. |
 | 409 | `nothing_to_approve` | No host of the sync has changes to sign, and no picked host is in sync. |
@@ -164,7 +163,7 @@ change at its next [sync](#syncs).
 Takes `{"package": "htop", "role": "<role id>"}`, or `"role": null` for
 the host's own adjustments. Adds the package at version `latest`. A role
 that has the package keeps its version. Returns `204`. Records
-`drift.adopted`. To revert a drift, sync the host.
+`drift.adopted`. `409` `builtin_role` for the built-in role. To revert a drift, sync the host.
 
 ### `POST /api/hosts/{id}/drift/ignore`
 
@@ -190,9 +189,9 @@ syncs it: see [syncs](#syncs).
 ### The built-in role
 
 The role named `bootstrap` holds what sewa needs on a host. It starts
-with one item, the package `mise`. Every host has it, and it cannot be
-renamed or deleted. Admins can add packages to it, but not tools. An
-unprefixed package of the built-in role goes to the host's package
+with one item, the package `mise`. Every host has it. sewa manages it, so
+it is read-only: a save or an adopt into it returns `409` `builtin_role`,
+and it cannot be deleted. An unprefixed package of the built-in role goes to the host's package
 manager: `pacman:` on Linux, `brew:` on macOS. So a fresh Mac gets
 `brew:mise`, which the agent installs before any mise item (see
 [native packages](#native-packages)). The controller creates the role
@@ -232,8 +231,8 @@ Replaces the role's name and items:
 ```
 
 Returns the role. `400` `invalid_name`, `invalid_item`, `duplicate_item`,
-`too_many_items` (more than 500), or `bootstrap_packages_only`; `409`
-`name_taken`, or `builtin_role` for a rename of the built-in role.
+or `too_many_items` (more than 500); `409` `name_taken`, or `builtin_role`
+for any save of the built-in role.
 Records `role.saved` with the name and the items `added`, `removed`, and
 `changed` (a new version or OS), and `renamed_from` after a rename.
 
