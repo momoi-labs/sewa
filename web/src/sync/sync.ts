@@ -45,8 +45,10 @@ export type PlanState = 'changes' | 'in_sync' | 'failed' | 'offline' | 'planning
 /** What a picked host's plan says. */
 export function planState(host: SyncHost): PlanState {
   if (host.plan && !host.plan.stale) {
-    if (host.plan.error || host.plan.exit_code === 1) return 'failed';
-    return host.plan.exit_code === 0 ? 'in_sync' : 'changes';
+    // Exit code 2 has changes to sign, even with an error: the agent
+    // applies the native changes and the mise items fail alone.
+    if (host.plan.exit_code === 2) return 'changes';
+    return host.plan.exit_code === 0 && !host.plan.error ? 'in_sync' : 'failed';
   }
   return host.status === 'connected' ? 'planning' : 'offline';
 }
