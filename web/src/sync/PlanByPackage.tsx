@@ -1,4 +1,8 @@
 import {
+  Alert,
+  AlertContent,
+  AlertDescription,
+  AlertTitle,
   Button,
   Popover,
   PopoverContent,
@@ -27,7 +31,7 @@ import {
   hostsLabel,
   type PackageRow,
 } from "./byPackage";
-import { plural } from "./sync";
+import { planState, plural } from "./sync";
 
 const ALL = "*";
 
@@ -70,6 +74,9 @@ export function PlanByPackage({ hosts }: { hosts: SyncHost[] }) {
         .map((entry) => entry.host.name),
     }))
     .filter((entry) => entry.names.length > 0);
+  const errors = hosts.filter(
+    (host) => host.plan && !host.plan.stale && host.plan.error,
+  );
 
   return (
     <div className="stack">
@@ -179,6 +186,21 @@ export function PlanByPackage({ hosts }: { hosts: SyncHost[] }) {
           .
         </p>
       )}
+      {errors.map((host) => (
+        <Alert
+          key={host.id}
+          variant={planState(host) === "failed" ? "error" : "warning"}
+        >
+          <AlertContent>
+            <AlertTitle>
+              {planState(host) === "failed"
+                ? `${host.name}: the plan failed`
+                : `${host.name}: some items could not be planned`}
+            </AlertTitle>
+            <AlertDescription className="mono">{host.plan?.error}</AlertDescription>
+          </AlertContent>
+        </Alert>
+      ))}
     </div>
   );
 }

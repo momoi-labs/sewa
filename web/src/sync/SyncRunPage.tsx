@@ -107,6 +107,8 @@ function Run({ sync }: { sync: Sync }) {
   const inSync = states.filter((state) => state === 'in_sync').length;
   const offline = states.filter((state) => state === 'offline').length;
   const failedPlans = states.filter((state) => state === 'failed').length;
+  // Done with no signature: every host is in sync, or no plan can be signed.
+  const allInSync = nothing && inSync === states.length;
   const approval = sync.approvals[0];
 
   const steps: StepItem[] = [
@@ -129,7 +131,7 @@ function Run({ sync }: { sync: Sync }) {
       ]
         .filter(Boolean)
         .join(', '),
-      detail: signed || nothing ? undefined : <PlanByPackage hosts={sync.hosts} />,
+      detail: signed || allInSync ? undefined : <PlanByPackage hosts={sync.hosts} />,
     },
     {
       key: 'sign',
@@ -193,7 +195,7 @@ function Run({ sync }: { sync: Sync }) {
   // step takes that step's state for every mark.
   return (
     <div className="stack">
-      <Finished sync={sync} nothing={nothing} />
+      <Finished sync={sync} nothing={nothing} allInSync={allInSync} />
       <Card>
         <CardContent>
           <StepList label="Sync progress" steps={steps} />
@@ -214,9 +216,29 @@ function Run({ sync }: { sync: Sync }) {
 }
 
 /** The end of a sync: every host reported. */
-function Finished({ sync, nothing }: { sync: Sync; nothing: boolean }) {
+function Finished({ sync, nothing, allInSync }: { sync: Sync; nothing: boolean; allInSync: boolean }) {
   if (sync.status !== 'done') return null;
   const hosts = tally(sync);
+  if (nothing && !allInSync) {
+    const states = sync.hosts.map((host) => planState(host));
+    const failed = states.filter((state) => state === 'failed').length;
+    const offline = states.filter((state) => state === 'offline').length;
+    const parts = [
+      failed && `${plural(failed, 'plan')} failed`,
+      offline && `${plural(offline, 'host')} offline`,
+    ].filter(Boolean);
+    return (
+      <Alert variant="warning">
+        <AlertContent>
+          <AlertTitle>Nothing can be signed</AlertTitle>
+          <AlertDescription>
+            No host has a plan to sign: {parts.join(', ')}. Fix the plans or bring the hosts online, then start
+            a new sync.
+          </AlertDescription>
+        </AlertContent>
+      </Alert>
+    );
+  }
   if (nothing) {
     return (
       <Alert variant="success">
