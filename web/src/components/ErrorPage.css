@@ -10,3 +10,12 @@
 .error-page-art-dark { display: none; }
 [data-theme="dark"] .error-page-art { display: none; }
 [data-theme="dark"] .error-page-art-dark { display: block; }
+
+/* The full page: no shell, centered on the page background. */
+.error-page-screen {
+  display: grid;
+  place-items: center;
+  min-block-size: 100dvh;
+  padding: var(--spacing-lg);
+  background: var(--color-background);
+}

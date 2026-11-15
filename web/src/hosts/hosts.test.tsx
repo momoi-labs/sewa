@@ -2,7 +2,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import type { Host } from '../api';
+import { retryQuery, type Host } from '../api';
 import { formatDateTime, formatReceived } from '../format';
 import { mockApi, renderRoute } from '../test-utils';
 
@@ -58,6 +58,31 @@ describe('hosts', () => {
     expect(await screen.findByRole('heading', { name: 'Access denied' })).toBeInTheDocument();
     expect(screen.getByText('Error 403')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+  });
+
+  it('shows the error page without the shell', async () => {
+    mockApi({ 'GET /api/hosts': { status: 403, body: { error: 'not_admin' } } });
+    renderRoute('/');
+    await screen.findByRole('heading', { name: 'Access denied' });
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /sewa/ })).not.toBeInTheDocument();
+    expect(document.querySelector('.error-page-screen')).not.toBeNull();
+  });
+
+  it('does not retry a 403 and keeps the page, but retries a 500', async () => {
+    const forbidden = mockApi({ 'GET /api/hosts': { status: 403, body: { error: 'not_admin' } } });
+    const first = renderRoute('/', { retry: retryQuery, retryDelay: 1, refetchInterval: 20 });
+    await screen.findByRole('heading', { name: 'Access denied' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(screen.getByRole('heading', { name: 'Access denied' })).toBeInTheDocument();
+    expect(forbidden.filter((c) => c.path === '/api/hosts')).toHaveLength(1);
+    first.unmount();
+
+    const broken = mockApi({ 'GET /api/hosts': { status: 500, body: { error: 'internal' } } });
+    renderRoute('/', { retry: retryQuery, retryDelay: 1 });
+    await screen.findByRole('heading', { name: 'Something broke on our side' });
+    expect(broken.filter((c) => c.path === '/api/hosts')).toHaveLength(4);
   });
 
   it('shows the 500 page when the controller fails, and retries', async () => {

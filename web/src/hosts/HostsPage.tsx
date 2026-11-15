@@ -21,7 +21,6 @@ import { useState } from 'react';
 
 import { hostsQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
-import { ErrorPage, isPageError } from '../components/ErrorPage';
 import { SkeletonRows } from '../components/SkeletonRows';
 import { Unknown } from '../components/Unknown';
 import { formatAgo, formatDateTime, osNames } from '../format';
@@ -42,9 +41,6 @@ export function HostsPage() {
     </Button>
   );
 
-  if (hosts.isError && !hosts.data && isPageError(hosts.error)) {
-    return <ErrorPage error={hosts.error} onRetry={() => void hosts.refetch()} />;
-  }
 
   return (
     <>
