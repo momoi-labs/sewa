@@ -70,7 +70,7 @@ contract disagree, the contract wins and this file has a bug.
 | Approve a change | Confirmations: a dialog that states what is signed and applied, and names the action. |
 | Adopt a package | CRUD: a small edit made in a dialog. |
 | Revert and Ignore drift | Plain actions on the host's Drift tab. Revert opens a change, which still needs an approval; Ignore only hides. |
-| Error page | Permission denied (403 `not_admin`): a locked EmptyState that replaces the whole page, shell included, with "Check again". Errors (5xx, no answer): the same composition with "Retry". Other load errors, and a failed refresh of data already on screen, keep `ErrorAlert`. |
+| Error page | Permission denied (403 `not_admin`): a locked screen that replaces the whole page, shell included, with the hatch over the viewport and one centered column, with "Check again". Errors (5xx, no answer): the same composition with "Retry". Other load errors, and a failed refresh of data already on screen, keep `ErrorAlert`. |
 
 ## Exceptions
 
@@ -80,8 +80,10 @@ contract disagree, the contract wins and this file has a bug.
   read at that size. Its colors are the brand's, in `SewaMark.css`, not Kiso
   tokens, so it keeps its colors with any accent. Kiso needs a BrandMark for
   a product logo.
-- `ErrorPage` puts a brand illustration, about 192 px high, in an
-  EmptyState, and uses that composition for 5xx errors too. Kiso prefers a
+- `ErrorPage` is a full page: the `hatch` fills the viewport and one
+  column (`.empty` with Kiso's title, description and actions) holds a brand
+  illustration, about 192 px high. It uses that composition for 5xx errors
+  too, and it is not inside an EmptyState panel. Kiso prefers a
   small icon in EmptyState and an Alert for errors. The brand asks for the
   illustrated page when the whole screen cannot load. The page keeps Kiso's
   copy order (what, why, now), uses no danger color, and the 5xx page is an

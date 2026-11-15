@@ -1,4 +1,4 @@
-import { Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateTitle } from '@momoi-labs/kiso-react';
+import { Button, EmptyStateActions, EmptyStateDescription, EmptyStateTitle } from '@momoi-labs/kiso-react';
 import { useId } from 'react';
 
 import { ApiFailure } from '../api';
@@ -31,10 +31,9 @@ export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => v
         };
 
   return (
-    <main className="error-page-screen">
-      <EmptyState
-        variant="informational"
-        className="error-page"
+    <main className="error-page-screen hatch">
+      <div
+        className="empty error-page"
         role={denied ? 'region' : 'alert'}
         aria-labelledby={titleId}
       >
@@ -46,7 +45,7 @@ export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => v
         <EmptyStateActions>
           <Button onClick={onRetry}>{page.action}</Button>
         </EmptyStateActions>
-      </EmptyState>
+      </div>
     </main>
   );
 }

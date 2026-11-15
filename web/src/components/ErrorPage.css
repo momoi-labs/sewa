@@ -11,11 +11,18 @@
 [data-theme="dark"] .error-page-art { display: none; }
 [data-theme="dark"] .error-page-art-dark { display: block; }
 
-/* The full page: no shell, centered on the page background. */
+/* The full page: the hatch fills the viewport, with no box. One column of
+   fixed width sits in the middle, the same for every error. */
 .error-page-screen {
   display: grid;
   place-items: center;
+  inline-size: 100%;
   min-block-size: 100dvh;
   padding: var(--spacing-lg);
-  background: var(--color-background);
+  background-color: var(--color-background);
 }
+.error-page {
+  inline-size: min(100%, 24rem);
+  padding: 0;
+}
+.error-page p:not(.mono) { min-block-size: 2lh; }
