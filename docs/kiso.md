@@ -6,7 +6,7 @@ contract disagree, the contract wins and this file has a bug.
 
 ## Contracts
 
-- Package: `@momoi-labs/kiso-react` 0.31.0 and `@momoi-labs/kiso` 1.9.0 in
+- Package: `@momoi-labs/kiso-react` 0.31.1 and `@momoi-labs/kiso` 1.9.1 in
   `web/`.
 - Contracts: `web/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 

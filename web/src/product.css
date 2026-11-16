@@ -16,6 +16,9 @@
   box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
 }
 .sidebar-header { align-content: center; }
+/* Kiso 0.31.1 gives the theme row no padding; the host sets the inset. The
+   top bar keeps the 8px the row had before, as Kiso does in the sidebar footer. */
+.topbar .theme-row { padding: var(--spacing-sm); }
 /* A line under the brand, like the top bar's, and the page body's gap
    above the first nav item, so it does not touch the line. */
 .sidebar-header { border-block-end: 1px solid var(--color-border); }
