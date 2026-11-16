@@ -8,44 +8,61 @@ use sewa_controller::install::AgentFiles;
 use sewa_controller::whois::Tailscale;
 use sewa_controller::{AppState, MIGRATOR, router, status};
 
-/// The sewa controller: hosts, their enrollment, and their status.
 #[derive(Parser)]
-#[command(name = "sewa-controller", version)]
+#[command(
+    name = "sewa-controller",
+    version,
+    about = "The sewa controller: hosts, their enrollment, and their status."
+)]
 struct Args {
-    /// PostgreSQL connection URL.
-    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
+    #[arg(
+        long,
+        env = "DATABASE_URL",
+        hide_env_values = true,
+        help = "PostgreSQL connection URL."
+    )]
     database_url: String,
 
-    /// Address and port to listen on, such as this machine's Tailscale
-    /// address.
-    #[arg(long, env = "SEWA_LISTEN")]
+    #[arg(
+        long,
+        env = "SEWA_LISTEN",
+        help = "Address and port to listen on, such as this machine's Tailscale address."
+    )]
     listen: SocketAddr,
 
-    /// The address agents reach the controller at, such as
-    /// http://controller.example:8080. It goes into the install command.
-    #[arg(long, env = "SEWA_PUBLIC_URL", value_parser = parse_public_url)]
+    #[arg(
+        long,
+        env = "SEWA_PUBLIC_URL",
+        value_parser = parse_public_url,
+        help = "The address agents reach the controller at, such as http://controller.example:8080. It goes into the install command."
+    )]
     public_url: String,
 
-    /// The Tailscale login names that may call the API, comma-separated.
-    #[arg(long, env = "SEWA_ADMINS", value_delimiter = ',', required = true)]
+    #[arg(
+        long,
+        env = "SEWA_ADMINS",
+        value_delimiter = ',',
+        required = true,
+        help = "The Tailscale login names that may call the API, comma-separated."
+    )]
     admins: Vec<String>,
 
-    /// The directory with the agent binary of each target, named
-    /// sewa-agent-<target>. dev/agent-files.sh builds them.
-    #[arg(long, env = "SEWA_AGENT_DIR")]
+    #[arg(
+        long,
+        env = "SEWA_AGENT_DIR",
+        help = "The directory with the agent binary of each target, named sewa-agent-<target>. dev/agent-files.sh builds them."
+    )]
     agent_dir: PathBuf,
 
-    /// tailscaled's local API socket.
     #[arg(
         long,
         env = "SEWA_TAILSCALE_SOCKET",
-        default_value = "/var/run/tailscale/tailscaled.sock"
+        default_value = "/var/run/tailscale/tailscaled.sock",
+        help = "tailscaled's local API socket."
     )]
     tailscale_socket: PathBuf,
 }
 
-/// An http or https URL without credentials, query, or fragment, with the
-/// trailing slash removed.
 fn parse_public_url(value: &str) -> Result<String, String> {
     let value = value.trim().trim_end_matches('/');
     let rest = value

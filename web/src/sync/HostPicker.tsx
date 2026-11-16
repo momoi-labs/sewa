@@ -27,7 +27,6 @@ const statuses = [
   ['disconnected', 'Disconnected'],
 ] as const;
 
-/** A host's OS as a filter value: `unknown` until its agent reports it. */
 const osOf = (host: ListedHost) => host.os ?? 'unknown';
 const osLabels: Record<string, string> = { ...osNames, unknown: 'Unknown' };
 
@@ -40,8 +39,6 @@ const sortKeys: Record<Column, (host: ListedHost) => string> = {
   status: (host) => `${host.status === 'connected' ? '1' : '0'} ${host.name}`,
 };
 
-/** Hosts that pass the filters: a host matches a group when it has one of
- *  the group's values, and must match every group that has a value. */
 function matches(host: ListedHost, filters: Filters) {
   return (
     (filters.os.size === 0 || filters.os.has(osOf(host))) &&
@@ -50,9 +47,6 @@ function matches(host: ListedHost, filters: Filters) {
   );
 }
 
-/** The "Pick hosts" step: filters on the left, a search, quick buttons and
- *  a sortable table of hosts. The search, the filters and the buttons act
- *  on the hosts shown. */
 export function HostPicker({
   hosts,
   chosen,
@@ -111,7 +105,6 @@ export function HostPicker({
     else next.delete(value);
     setFilters({ ...filters, [group]: next });
   };
-  /** Changes the selection of the shown hosts only. */
   const pick = (select: (host: ListedHost) => boolean) => {
     const next = new Set(chosen);
     for (const host of shown) {

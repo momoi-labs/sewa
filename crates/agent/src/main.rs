@@ -16,9 +16,12 @@ use plan::Planner;
 use state::State;
 use worker::Worker;
 
-/// The node side of sewa: reports this machine to the controller.
 #[derive(Debug, Parser)]
-#[command(name = "sewa-agent", version = AGENT_VERSION)]
+#[command(
+    name = "sewa-agent",
+    version = AGENT_VERSION,
+    about = "The node side of sewa: reports this machine to the controller."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,33 +29,36 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Trade an install token for a credential and store it.
+    #[command(about = "Trade an install token for a credential and store it.")]
     Enroll(EnrollArgs),
-    /// Report this machine to the controller over OpAMP every 30 seconds,
-    /// plan the configs it sends, and apply the current one when a pinned
-    /// approver key signed its plan.
+    #[command(
+        about = "Report this machine to the controller over OpAMP every 30 seconds, plan the configs it sends, and apply the current one when a pinned approver key signed its plan."
+    )]
     Run(RunArgs),
-    /// Pin the approver keys, read as JSON from stdin, replacing the keys
-    /// pinned before. The install script runs this; with no key pinned the
-    /// agent applies nothing.
+    #[command(
+        about = "Pin the approver keys, read as JSON from stdin, replacing the keys pinned before. The install script runs this; with no key pinned the agent applies nothing."
+    )]
     Pin(StateArgs),
 }
 
 #[derive(Debug, Args)]
 struct StateArgs {
-    /// Where the agent keeps its credential. Default: /var/lib/sewa on
-    /// Linux, ~/Library/Application Support/sewa on macOS.
-    #[arg(long, env = "SEWA_STATE_DIR")]
+    #[arg(
+        long,
+        env = "SEWA_STATE_DIR",
+        help = "Where the agent keeps its credential. Default: /var/lib/sewa on Linux, ~/Library/Application Support/sewa on macOS."
+    )]
     state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 struct EnrollArgs {
-    /// The controller's address, such as http://controller.example:8080.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "The controller's address, such as http://controller.example:8080."
+    )]
     server: String,
-    /// The single-use install token from the controller.
-    #[arg(long)]
+    #[arg(long, help = "The single-use install token from the controller.")]
     token: String,
     #[command(flatten)]
     state: StateArgs,
@@ -62,8 +68,12 @@ struct EnrollArgs {
 struct RunArgs {
     #[command(flatten)]
     state: StateArgs,
-    /// The mise binary that plans the configs.
-    #[arg(long, env = "SEWA_MISE", default_value = "mise")]
+    #[arg(
+        long,
+        env = "SEWA_MISE",
+        default_value = "mise",
+        help = "The mise binary that plans the configs."
+    )]
     mise: PathBuf,
 }
 
@@ -92,7 +102,6 @@ fn state(args: StateArgs) -> Result<State, String> {
     }
 }
 
-/// The JSON string of `text`, for the one field of the enroll body.
 fn json_string(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
@@ -198,8 +207,6 @@ fn run(args: RunArgs) -> Result<(), String> {
     }
     let planner = Planner::new(&state.dir, args.mise);
     let mut worker = Worker::new(planner, state, uid);
-    // Plans the last approved state on start, with or without the
-    // controller.
     worker.boot();
     let mut sequence_num: u64 = 0;
     let mut failing = false;
@@ -215,8 +222,6 @@ fn run(args: RunArgs) -> Result<(), String> {
                 failing = false;
             }
             Err(error) => {
-                // Once per outage: the agent keeps checking the host and
-                // keeps its reports until the controller answers.
                 if !failing {
                     eprintln!(
                         "sewa-agent: cannot report: {error}; reports wait in the outbox ({} now)",
@@ -228,7 +233,6 @@ fn run(args: RunArgs) -> Result<(), String> {
         }
         sequence_num = sequence_num.wrapping_add(1);
         worker.tick(std::time::Instant::now());
-        // Buffered reports go out one per message, without waiting.
         if failing || worker.outbox.is_empty() {
             std::thread::sleep(POLL_INTERVAL);
         }

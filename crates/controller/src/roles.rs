@@ -1,7 +1,3 @@
-//! `/api/roles`: create roles, read them with their items and hosts, and
-//! save a role's name and items at once. A save changes the desired state
-//! right away. Hosts get it when an admin syncs them (`syncs.rs`).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::Extension;
@@ -19,7 +15,6 @@ use crate::events::{self, About};
 use crate::whois::Identity;
 use crate::{AppState, hosts};
 
-/// The most items one role holds.
 const ITEM_LIMIT: usize = 500;
 
 #[derive(Debug, Deserialize)]
@@ -37,17 +32,12 @@ pub struct Named {
 pub struct Role {
     pub id: Uuid,
     pub name: String,
-    /// The built-in role: every host has it, and it cannot be deleted or
-    /// renamed.
     pub builtin: bool,
     pub created_at: DateTime<Utc>,
     pub items: Vec<Item>,
-    /// The hosts that have the role, by name. Every host has the built-in
-    /// role.
     pub hosts: Vec<Named>,
 }
 
-/// Items as the API shows them, from a host's merged items.
 pub fn items<'a>(items: impl IntoIterator<Item = (&'a Key, &'a String)>) -> Vec<Item> {
     items
         .into_iter()
@@ -124,13 +114,11 @@ fn role_id(id: &str) -> ApiResult<Uuid> {
         .map_err(|_| Failure::new(StatusCode::NOT_FOUND, "not_found"))
 }
 
-/// `GET /api/roles`: the built-in role, then every other role by name.
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Role>>> {
     let mut connection = state.pool.acquire().await?;
     Ok(Json(read(&mut connection, None).await?))
 }
 
-/// `GET /api/roles/{id}`: one role, or 404 `not_found`.
 pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Role>> {
     let id = role_id(&id)?;
     let mut connection = state.pool.acquire().await?;
@@ -141,7 +129,6 @@ pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiRe
     Ok(Json(role))
 }
 
-/// `POST /api/roles`: creates an empty role.
 pub async fn create(
     State(state): State<AppState>,
     Json(new): Json<NewRole>,
@@ -189,12 +176,10 @@ pub struct SavedRole {
     pub items: Vec<Item>,
 }
 
-/// What a save changed in a role's items.
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Diff {
     pub added: Vec<Item>,
     pub removed: Vec<Item>,
-    /// The items whose version or OS changed, as they are now.
     pub changed: Vec<Item>,
 }
 
@@ -213,7 +198,6 @@ fn item((kind, name): &Key, spec: &Spec) -> Item {
     }
 }
 
-/// The difference between a role's items before and after a save.
 pub fn diff(before: &BTreeMap<Key, Spec>, after: &BTreeMap<Key, Spec>) -> Diff {
     let mut diff = Diff::default();
     for (key, spec) in after {
@@ -231,10 +215,6 @@ pub fn diff(before: &BTreeMap<Key, Spec>, after: &BTreeMap<Key, Spec>) -> Diff {
     diff
 }
 
-/// `PUT /api/roles/{id}`: replaces the role's name and items, and records
-/// `role.saved` with what changed. 400 `invalid_name`, `invalid_item`,
-/// `duplicate_item`, or `too_many_items`; 409 `name_taken` or `builtin_role`
-/// (sewa manages the built-in role, so no save changes it); 404 `not_found`.
 pub async fn save(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -344,7 +324,6 @@ pub async fn save(
     Ok(Json(role))
 }
 
-/// 409 `builtin_role` when `id` is the built-in role, which sewa manages.
 pub async fn writable(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<()> {
     let builtin: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM roles WHERE id = $1 AND builtin)")
@@ -357,8 +336,6 @@ pub async fn writable(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResul
     Ok(())
 }
 
-/// The role ids a list names, without the built-in role, or 400
-/// `unknown_role`.
 pub async fn known(
     connection: &mut sqlx::PgConnection,
     roles: &[Uuid],

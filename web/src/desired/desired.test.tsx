@@ -216,7 +216,6 @@ describe('host drift', () => {
       health: 'drift',
       drift: {
         ...plan,
-        // A plan the agent kept while offline.
         received_at: '2026-01-02T11:30:00Z',
         status: 'drift',
         ignored: false,

@@ -37,8 +37,6 @@ import { ItemForm } from './ItemForm';
 import { kindNames } from './items';
 import { PlanView } from './PlanView';
 
-/** Edits the host's roles and adjustments. They change its desired state
- *  only: the host gets them at its next sync. */
 function useHostEdit(host: Host) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -52,8 +50,6 @@ function useHostEdit(host: Host) {
   });
 }
 
-/** The host's roles, its adjustments, and the items they add up to. Each
- *  edit saves at once and applies at the next sync. */
 export function HostDesired({ host, state }: { host: Host; state: HostState }) {
   const edit = useHostEdit(host);
   const roles = useQuery(rolesQuery);
@@ -228,9 +224,6 @@ const health: Record<string, { tone: StatusTone; label: string }> = {
   error: { tone: 'danger', label: 'Plan failed' },
 };
 
-/** Whether the host matches its desired state, the plan that would fix
- *  it, and the packages installed outside any role. Revert, Adopt and
- *  Ignore act on the drift. */
 export function HostDrift({ host, state }: { host: Host; state: HostState }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();

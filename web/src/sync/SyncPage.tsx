@@ -34,8 +34,6 @@ import { describeEdit, plural } from './sync';
 
 const SHOWN_EDITS = 8;
 
-/** Starts a sync: the edits since the last one, then the hosts to bring to
- *  their desired state. */
 export function SyncPage() {
   const syncs = useQuery(syncsQuery);
   const running = syncs.data?.find((sync) => sync.status !== 'done');

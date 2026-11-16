@@ -8,9 +8,6 @@ import { instanceQuery } from '../api';
 import { SewaMark } from './SewaMark';
 import { applyTheme, savedTheme, type Theme } from './theme';
 
-/** The frame of every page: the brand, the theme, and the destinations
- *  Hosts, Roles, Sync and Passkeys. The brand slot shows
- *  the instance address under the name. */
 export function Shell() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -86,7 +83,6 @@ export function Shell() {
   );
 }
 
-/** The instance address without its scheme, as the header shows it. */
 function address(url: string): string {
   return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }

@@ -6,7 +6,6 @@ import { ErrorAlert, errorCode } from '../components/ErrorAlert';
 
 const LIMIT = 200;
 
-/** Why a name or version is refused, as the controller checks it. */
 function problem(value: string, what: string): string | undefined {
   if (!value.trim()) return `Enter a ${what}.`;
   if (value.trim().length > LIMIT) return `Use at most ${LIMIT} characters.`;
@@ -14,12 +13,10 @@ function problem(value: string, what: string): string | undefined {
 }
 
 type Props = {
-  /** Sends the item. Rejects with an ApiFailure. */
   onAdd: (item: Item) => Promise<unknown>;
   submitLabel: string;
 };
 
-/** Adds an item, or sets its version: a package or a mise tool. */
 export function ItemForm({ onAdd, submitLabel }: Props) {
   const [kind, setKind] = useState<ItemKind>('package');
   const [name, setName] = useState('');

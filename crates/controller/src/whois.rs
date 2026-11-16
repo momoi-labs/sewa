@@ -1,10 +1,3 @@
-//! Who is behind a connection, as Tailscale knows it.
-//!
-//! The controller asks tailscaled's local API (`/localapi/v0/whois`) for the
-//! peer address of each request. The answer names the tailnet node and the
-//! user that owns it. An address that is not a tailnet node has no answer.
-//! [`WhoIs`] hides the lookup, so tests use a fake.
-
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,30 +9,23 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-/// A tailnet node and the user that owns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
-    /// The user's login name, as the admin list holds it.
     pub login: String,
-    /// The node's name in the tailnet.
     pub node: String,
 }
 
 pub type WhoIsFuture<'a> =
     Pin<Box<dyn Future<Output = anyhow::Result<Option<Identity>>> + Send + 'a>>;
 
-/// Finds who is behind a peer address. `Ok(None)` means the address is not
-/// a tailnet node; an error means the lookup itself failed.
 pub trait WhoIs: Send + Sync {
     fn whois(&self, peer: SocketAddr) -> WhoIsFuture<'_>;
 }
 
-/// The local API of the tailscaled on this machine, over its Unix socket.
 pub struct Tailscale {
     pub socket: PathBuf,
 }
 
-/// The largest answer read from tailscaled.
 const ANSWER_LIMIT: u64 = 1024 * 1024;
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -59,8 +45,6 @@ impl Tailscale {
         let mut stream = UnixStream::connect(&self.socket)
             .await
             .with_context(|| format!("cannot connect to {}", self.socket.display()))?;
-        // HTTP/1.0, so the answer is never chunked and ends when the
-        // connection closes.
         let request = format!(
             "GET /localapi/v0/whois?addr={} HTTP/1.0\r\nHost: local-tailscaled.sock\r\n\r\n",
             query_escape(&peer.to_string())
@@ -72,7 +56,6 @@ impl Tailscale {
     }
 }
 
-/// Percent-encodes everything but letters, digits, and dots.
 fn query_escape(value: &str) -> String {
     value
         .bytes()
@@ -106,8 +89,6 @@ struct UserProfile {
     login: String,
 }
 
-/// Reads tailscaled's HTTP answer: 200 with the node, or 404 when the
-/// address is not a tailnet node.
 fn parse_answer(answer: &[u8]) -> anyhow::Result<Option<Identity>> {
     let split = answer
         .windows(4)

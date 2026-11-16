@@ -8,9 +8,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-// jsdom has no scrolling, and the router restores scroll on navigation.
 window.scrollTo = () => {};
-// Nor pointer capture or scrollIntoView, which Radix controls call.
 Element.prototype.hasPointerCapture = () => false;
 Element.prototype.releasePointerCapture = () => {};
 Element.prototype.scrollIntoView = () => {};
@@ -21,7 +19,6 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 };
 
-// Nor matchMedia, which the shell reads for narrow screens.
 window.matchMedia ??= (query: string) =>
   ({
     matches: false,

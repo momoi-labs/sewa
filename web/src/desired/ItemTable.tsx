@@ -31,7 +31,6 @@ import { type GroupKey, groupOf, groups, isWord, itemKey, itemProblem, splitKey 
 
 const MAX_SUGGESTIONS = 8;
 
-/** The items in their groups, sorted by name, with empty groups left out. */
 export function groupItems(items: Item[], query = '') {
   const typed = query.trim().toLowerCase();
   return groups
@@ -48,18 +47,12 @@ export function groupItems(items: Item[], query = '') {
 const osNames: Record<Os | 'all', string> = { all: 'Linux and macOS', linux: 'Linux only', macos: 'macOS only' };
 
 type Props = {
-  /** Every item of the role, packages and mise tools. */
   value: Item[];
   onChange?: (value: Item[]) => void;
-  /** Names to suggest per kind, such as the items of other roles. */
   suggestions?: Record<ItemKind, string[]>;
-  /** Shows the items with no edit controls. */
   readOnly?: boolean;
 };
 
-/** A role's items as tables, one per source, in sections that fold. A
- *  search filters the rows; an add field takes a package or a mise tool
- *  with the prefix syntax. Version and OS change in the row. */
 export function ItemTable({ value, onChange, suggestions, readOnly }: Props) {
   const [query, setQuery] = useState('');
   const [closed, setClosed] = useState<Set<GroupKey>>(new Set());
@@ -251,8 +244,6 @@ function ItemRow({
   );
 }
 
-/** The add field: a kind, then a name with the prefix syntax. Enter adds
- *  the typed name; the suggestions are the names other roles use. */
 function AddItem({
   have,
   suggestions,

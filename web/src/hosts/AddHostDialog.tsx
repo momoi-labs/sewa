@@ -24,15 +24,11 @@ import { ErrorAlert } from '../components/ErrorAlert';
 import { formatClock } from '../format';
 import { HostStatusBadge } from './HostStatusBadge';
 
-/** A name the controller takes: 1 to 63 letters, digits, `-`, `_` or `.`. */
 const NAME = /^[A-Za-z0-9._-]{1,63}$/;
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void };
 
-/** Creates a host, then shows its install command once. */
 export function AddHostDialog({ open, onOpenChange }: Props) {
-  // A pending creation would show its command in a dialog the person
-  // already closed, so the dialog stays until the answer arrives.
   const [busy, setBusy] = useState(false);
   return (
     <Dialog open={open} onOpenChange={(next) => (next || !busy) && onOpenChange(next)}>
@@ -110,7 +106,6 @@ function AddHostForm({ onBusy, onClose }: { onBusy: (busy: boolean) => void; onC
   );
 }
 
-/** The install command of a new host, with its live status until the agent answers. */
 export function InstallStep({ created, onClose }: { created: Created; onClose: () => void }) {
   const hosts = useQuery(hostsQuery);
   const host = hosts.data?.find((item) => item.id === created.host.id) ?? created.host;

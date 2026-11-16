@@ -10,7 +10,6 @@ function names(value: unknown): string {
   return Array.isArray(value) ? value.join(', ') : '';
 }
 
-/** One edit as a sentence, such as "base: 2 items added". */
 export function describeEdit(edit: EditEntry): string {
   const data = edit.data;
   const host = edit.host?.name ?? 'a host';
@@ -42,20 +41,14 @@ export function describeEdit(edit: EditEntry): string {
 
 export type PlanState = 'changes' | 'in_sync' | 'failed' | 'offline' | 'planning';
 
-/** What a picked host's plan says. */
 export function planState(host: SyncHost): PlanState {
   if (host.plan && !host.plan.stale) {
-    // Exit code 2 has changes to sign, even with an error: the agent
-    // applies the native changes and the mise items fail alone.
     if (host.plan.exit_code === 2) return 'changes';
     return host.plan.exit_code === 0 && !host.plan.error ? 'in_sync' : 'failed';
   }
   return host.status === 'connected' ? 'planning' : 'offline';
 }
 
-/** Whether the controller's approval targets are the plans on the page:
- *  the same hosts, each with the config and plan the page shows. `only`
- *  limits the page's side to those hosts, as for a retry. */
 export function sameTargets(sync: Sync, targets: HostPlan[], only?: string[]): boolean {
   const shown = sync.hosts.filter(
     (host) =>
@@ -72,7 +65,6 @@ export function sameTargets(sync: Sync, targets: HostPlan[], only?: string[]): b
   );
 }
 
-/** The hosts in each step, by name. */
 export function tally(sync: Sync) {
   const of = (...steps: SyncHost['step'][]) => sync.hosts.filter((host) => steps.includes(host.step));
   return {
@@ -85,7 +77,6 @@ export function tally(sync: Sync) {
   };
 }
 
-/** When the last host reported, or when the sync started. */
 export function finishedAt(sync: Sync): string {
   let last = sync.approvals.at(-1)?.created_at ?? sync.created_at;
   for (const host of sync.hosts) {

@@ -1,14 +1,3 @@
-//! The reports the controller has not received yet: plans, with their
-//! drift and undeclared packages, and apply results. Each one is a file in
-//! `<state>/outbox`, written before the agent tries to send it, so a
-//! controller that is down or a restart of the agent loses nothing. They go
-//! out in the order they were written, and one leaves the outbox only once
-//! the controller answered the message that carried it.
-//!
-//! The outbox is bounded. Past its limit it drops the oldest plan first,
-//! because a later plan of the same config tells more. Apply results go
-//! only when nothing else is left to drop.
-
 use std::collections::VecDeque;
 use std::fs::{self, DirBuilder};
 use std::io;
@@ -21,21 +10,17 @@ use crate::opamp::PLAN_CAPABILITY;
 use crate::opamp::proto::CustomMessage;
 use crate::state::write_private;
 
-/// The default limit, in bytes of encoded messages.
 pub const LIMIT: usize = 8 * 1024 * 1024;
 
 pub struct Outbox {
     dir: PathBuf,
     limit: usize,
-    /// Each message with its sequence number, which names its file.
     entries: VecDeque<(u64, CustomMessage)>,
     next: u64,
     size: usize,
 }
 
 impl Outbox {
-    /// Opens the outbox in `dir` and reads what an earlier run left in it.
-    /// A file that does not read is dropped.
     pub fn open(dir: PathBuf, limit: usize) -> Self {
         let mut found: Vec<(u64, CustomMessage)> = Vec::new();
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -70,8 +55,6 @@ impl Outbox {
         outbox
     }
 
-    /// Adds a message at the end. Returns whether it reached the disk; when
-    /// it did not, it stays in memory and still goes out.
     pub fn push(&mut self, message: CustomMessage) -> bool {
         let sequence = self.next;
         self.next += 1;
@@ -97,12 +80,10 @@ impl Outbox {
         self.dir.join(format!("{sequence:020}.pb"))
     }
 
-    /// The oldest message, the next to send.
     pub fn front(&self) -> Option<&CustomMessage> {
         self.entries.front().map(|(_, message)| message)
     }
 
-    /// Drops the oldest message, once the controller received it.
     pub fn pop(&mut self) {
         self.remove(0);
     }
@@ -134,8 +115,6 @@ impl Outbox {
         }
     }
 
-    /// Drops messages until the outbox fits its limit, keeping at least
-    /// the newest.
     fn trim(&mut self) {
         let mut dropped = 0;
         while self.size > self.limit && self.entries.len() > 1 {
@@ -191,7 +170,6 @@ mod tests {
         let mut outbox = Outbox::open(dir.clone(), LIMIT);
         let expected: Vec<String> = (1..12).map(|index| format!("m{index}")).collect();
         assert_eq!(data(&outbox), expected);
-        // New messages go after the ones an earlier run left.
         outbox.push(message(PLAN_CAPABILITY, "m12"));
         drop(outbox);
         let outbox = Outbox::open(dir.clone(), LIMIT);
@@ -199,7 +177,6 @@ mod tests {
         assert_eq!(files(&dir), 12);
     }
 
-    /// Not a plan, and as long as one, so each message has the same size.
     const RESULT: &str = "io.sewa.rslt";
 
     #[test]
@@ -217,13 +194,11 @@ mod tests {
         outbox.push(message(PLAN_CAPABILITY, "p4"));
         assert_eq!(data(&outbox), ["r0", "p2", "p3", "p4"]);
         assert_eq!(files(&dir), 4);
-        // Only results left: the oldest goes.
         outbox.push(message(RESULT, "r1"));
         outbox.push(message(RESULT, "r2"));
         outbox.push(message(RESULT, "r3"));
         outbox.push(message(RESULT, "r4"));
         assert_eq!(data(&outbox), ["r1", "r2", "r3", "r4"]);
-        // A smaller limit after a restart trims what was left.
         drop(outbox);
         let outbox = Outbox::open(dir.clone(), one * 2);
         assert_eq!(data(&outbox), ["r3", "r4"]);

@@ -142,7 +142,6 @@ describe('hosts', () => {
     renderRoute('/');
     await user.click(await screen.findByRole('button', { name: 'Add a host' }));
     const dialog = await screen.findByRole('dialog');
-    // The agent reports the OS; the admin does not pick it.
     expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Add host' }));
     expect(within(dialog).getByText('Enter a name.')).toBeInTheDocument();

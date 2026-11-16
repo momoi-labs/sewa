@@ -1,8 +1,3 @@
-//! `POST /v1/enroll`: an agent trades its install token for a credential.
-//!
-//! Adapted from pg-yard's `crates/cell/src/agent.rs`. The request must come
-//! from a tailnet node, which tailscaled confirms.
-
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
@@ -19,17 +14,12 @@ struct Enroll {
     token: String,
 }
 
-/// The largest enroll body read.
 const BODY_LIMIT: usize = 4 * 1024;
 
 fn token_invalid() -> Failure {
     Failure::new(StatusCode::UNAUTHORIZED, "token_invalid")
 }
 
-/// One transaction: the host first, then its token and credentials. Either
-/// the token is spent and the new credential exists, or nothing changed.
-/// Earlier credentials of the host are revoked. The answer is the bare
-/// credential as text.
 pub async fn enroll(
     State(state): State<AppState>,
     request: Request,
@@ -41,7 +31,6 @@ pub async fn enroll(
     let Enroll { token } = serde_json::from_slice(&body)
         .map_err(|_| Failure::new(StatusCode::BAD_REQUEST, "invalid_body"))?;
     let token_hash = secret::hash(&token);
-    // Unlocked, only to find which host to lock.
     let host: Option<Uuid> =
         sqlx::query_scalar("SELECT host_id FROM install_tokens WHERE token_hash = $1")
             .bind(&token_hash)
@@ -54,8 +43,6 @@ pub async fn enroll(
         .bind(host)
         .execute(&mut *transaction)
         .await?;
-    // clock_timestamp(), not now(): now() is when the transaction began, and
-    // this call may have waited on the host's lock past the expiry.
     let spent = sqlx::query(
         "UPDATE install_tokens SET used_at = now()
          WHERE token_hash = $1 AND host_id = $2 AND used_at IS NULL
@@ -107,7 +94,6 @@ pub async fn enroll(
     ))
 }
 
-/// The credential in an `Authorization: Bearer` header.
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)
@@ -116,9 +102,6 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .map(str::trim)
 }
 
-/// The host a live credential belongs to. The database keeps only the
-/// credential's SHA-256, and the stored hash is compared again in constant
-/// time.
 pub async fn authenticate(pool: &sqlx::PgPool, credential: &str) -> sqlx::Result<Option<Uuid>> {
     let hash = secret::hash(credential);
     let row: Option<(Vec<u8>, Uuid)> = sqlx::query_as(

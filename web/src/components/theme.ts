@@ -2,7 +2,6 @@ export type Theme = 'system' | 'light' | 'dark';
 
 const storageKey = 'kiso-theme';
 
-/** The theme the person chose, or `system`, per Kiso's ThemeSelector. */
 export function savedTheme(): Theme {
   try {
     const value = localStorage.getItem(storageKey);
@@ -12,10 +11,6 @@ export function savedTheme(): Theme {
   }
 }
 
-/**
- * Applies and keeps a theme. `data-theme` is always light or dark: `system`
- * takes the OS mode, and public/theme.js follows it when it changes.
- */
 export function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme =
     theme === 'system'
@@ -26,6 +21,6 @@ export function applyTheme(theme: Theme) {
   try {
     localStorage.setItem(storageKey, theme);
   } catch {
-    // Storage may be off; the choice then lasts until the page reloads.
+    return;
   }
 }

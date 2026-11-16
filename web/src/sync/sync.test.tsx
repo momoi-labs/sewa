@@ -71,7 +71,6 @@ afterEach(() => {
   else Reflect.deleteProperty(navigator, 'credentials');
 });
 
-/** A browser with WebAuthn whose authenticator answers `get` and `create`. */
 function authenticator() {
   vi.stubGlobal('PublicKeyCredential', class {});
   const get = vi.fn(async () => ({
@@ -322,7 +321,6 @@ describe('sync', () => {
     expect(await screen.findByText(/Sync finished with failures/)).toBeInTheDocument();
     expect(screen.getByText('1 host applied, 1 failed, 1 skipped.', { exact: false })).toBeInTheDocument();
     expect(screen.getByText('error: target not found: jq')).toBeInTheDocument();
-    // The retry signs the host's current plan, so it shows first.
     const install = screen.getByRole('table', { name: 'Install (1)' });
     expect(within(install).getByText('jq')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry build-2' }));

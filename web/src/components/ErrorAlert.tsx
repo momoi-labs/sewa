@@ -2,7 +2,6 @@ import { Alert, AlertContent, AlertDescription, AlertTitle, Button } from '@momo
 
 import { ApiFailure } from '../api';
 
-/** What happened, why, and what to do now, by the API's error code. */
 const messages: Record<string, { title: string; body: string }> = {
   network: {
     title: 'The controller did not answer',
@@ -114,8 +113,6 @@ export function errorCode(error: unknown): string {
   return error instanceof ApiFailure ? error.code : 'internal';
 }
 
-/** An error Alert for a failed API call, with an optional retry. `thing`
- *  names what a 404 did not find: a host, a role, or a sync. */
 export function ErrorAlert({
   error,
   onRetry,

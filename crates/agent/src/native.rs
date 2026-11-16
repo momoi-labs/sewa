@@ -1,12 +1,3 @@
-//! Packages the agent installs with the OS package manager itself, without
-//! mise: `brew:` and `brew-cask:` keys on macOS, `pacman:` keys on Linux,
-//! when the version is `latest` or the state is `absent`. The built-in
-//! `bootstrap` role puts mise itself here, so a host without mise gets it
-//! in the same run that installs the mise items.
-//!
-//! On macOS a missing Homebrew fails these items, and nothing else is
-//! planned on top of them: only the install script installs Homebrew.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,7 +5,6 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// What a host without Homebrew gets for its native items.
 pub const NO_HOMEBREW: &str = "Homebrew is missing; rerun the install script";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -25,34 +15,25 @@ pub enum Manager {
     Pacman,
 }
 
-/// One native package of a config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
-    /// The key as the config has it, such as `brew:mise`.
     pub key: String,
     pub manager: Manager,
     pub name: String,
     pub absent: bool,
 }
 
-/// A config split in two: the native items, and the rest for mise.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Split {
     pub native: Vec<Item>,
-    /// The mise config without the native items. `None` when nothing was
-    /// taken out: mise reads the body as it came.
     #[serde(skip)]
     pub mise: Option<String>,
-    /// The kinds and names of what is left for mise: `package` or `tool`.
     pub rest: Vec<(String, String)>,
 }
 
-/// The package managers of this host.
 #[derive(Debug, Clone)]
 pub struct Native {
     pub macos: bool,
-    /// Where to look for `brew`, in order. A bare name is looked up in
-    /// `PATH`. launchd's `PATH` has neither Homebrew prefix.
     pub brew: Vec<PathBuf>,
     pub pacman: Vec<PathBuf>,
 }
@@ -79,8 +60,6 @@ impl Native {
         }
     }
 
-    /// Takes the native items out of a config. A body that is not TOML
-    /// goes to mise whole, which reports the error.
     pub fn split(&self, body: &[u8]) -> Split {
         let Some(mut table) = std::str::from_utf8(body)
             .ok()
@@ -122,7 +101,6 @@ impl Native {
                 });
             }
         }
-        // Drops tables the split left empty.
         if let Some(bootstrap) = table
             .get_mut("bootstrap")
             .and_then(toml::Value::as_table_mut)
@@ -163,7 +141,6 @@ impl Native {
         Split { native, mise, rest }
     }
 
-    /// The command of a manager, or why there is none.
     fn program(&self, manager: Manager) -> Result<PathBuf, String> {
         match manager {
             Manager::Brew | Manager::Cask => find(&self.brew).ok_or_else(|| NO_HOMEBREW.to_owned()),
@@ -171,8 +148,6 @@ impl Native {
         }
     }
 
-    /// What each item needs: `create`, `remove`, or `noop`, as resources
-    /// of a mise plan.
     pub fn plan(&self, items: &[Item]) -> Result<Vec<Value>, String> {
         let managers: BTreeSet<Manager> = items.iter().map(|item| item.manager).collect();
         let mut installed = Vec::new();
@@ -187,7 +162,6 @@ impl Native {
                     .iter()
                     .find(|(manager, _)| *manager == item.manager)
                     .map(|(_, names)| names);
-                // `brew list` names a tap formula without its tap.
                 let short = item.name.rsplit('/').next().unwrap_or(&item.name);
                 let present = names.is_some_and(|names| names.contains(short));
                 let action = match (item.absent, present) {
@@ -200,8 +174,6 @@ impl Native {
             .collect())
     }
 
-    /// Installs and removes what the plan of `items` says now. Returns 0
-    /// when every command succeeded, and the log of each.
     pub fn apply(&self, items: &[Item]) -> (i32, String) {
         let resources = match self.plan(items) {
             Ok(resources) => resources,
@@ -265,12 +237,10 @@ impl Native {
     }
 }
 
-/// A resource of a mise plan.
 pub fn resource(name: &str, action: &str) -> Value {
     json!({ "id": { "kind": "package", "name": name }, "action": action })
 }
 
-/// The installed packages of a manager, by name.
 fn list(program: &Path, manager: Manager) -> Result<BTreeSet<String>, String> {
     let args: &[&str] = match manager {
         Manager::Brew => &["list", "--formula", "-1"],
@@ -298,7 +268,6 @@ fn list(program: &Path, manager: Manager) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
-/// The first candidate that exists. A bare name is looked up in `PATH`.
 pub fn find(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find_map(|candidate| {
         if candidate.components().count() > 1 {

@@ -1,16 +1,3 @@
-//! The OpAMP server agents report to, at `POST /v1/opamp`.
-//!
-//! Plain HTTP transport: the agent posts a protobuf `AgentToServer` and gets
-//! a protobuf `ServerToAgent` back. The controller keeps the agent's
-//! description and when it last heard from it. Adapted from pg-yard's
-//! `crates/cell/src/opamp.rs`.
-//!
-//! The controller sends each host its desired config, `current`, as
-//! `remote_config`, and the agent sends each plan back as a custom message
-//! of the `io.sewa.plan` capability. Approvals go to the agent, and what
-//! it did with them comes back, as custom messages of the
-//! `io.sewa.approval` capability. See docs/api.md.
-
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -28,53 +15,36 @@ use proto::{
     CustomCapabilities, CustomMessage, ServerCapabilities, ServerToAgent, ServerToAgentFlags,
 };
 
-/// The custom capability that carries plans from the agent.
 pub const PLAN_CAPABILITY: &str = "io.sewa.plan";
 
-/// The custom message type of one plan.
 pub const PLAN_TYPE: &str = "plan";
 
-/// The content type of a config in `remote_config`.
 pub const CONFIG_CONTENT_TYPE: &str = "application/toml";
 
-/// One plan, as the agent sends it in a custom message.
 #[derive(Debug, serde::Deserialize)]
 pub struct PlanReport {
-    /// The config the agent planned: `current`.
     pub config: String,
-    /// The hex SHA-256 of the config the agent planned.
     pub config_hash: String,
-    /// The hex SHA-256 of mise's JSON output.
     pub plan_hash: String,
-    /// mise's exit code with `--detailed-exitcode`: 0 in sync, 2 changes,
-    /// 1 an error or an unknown state.
     pub exit_code: i32,
-    /// mise's JSON plan, when it printed one.
     pub plan: Option<serde_json::Value>,
     pub error: Option<String>,
-    /// With a plan of `current`: the packages the host's package manager
-    /// lists as explicitly installed.
     pub explicit: Option<Explicit>,
-    /// When the agent planned, in Unix milliseconds by its clock. A plan
-    /// the agent kept while the controller was down arrives later.
     #[serde(default)]
     pub at: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 pub struct Explicit {
-    /// `pacman`, `apt`, or `brew`.
     pub manager: String,
     pub packages: Vec<String>,
 }
 
-/// The messages of the OpAMP specification, generated from `proto/opamp`.
 #[allow(clippy::all, clippy::pedantic)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/opamp.proto.v1.rs"));
 }
 
-/// What the controller keeps of an agent description.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Description {
     pub version: Option<String>,
@@ -111,9 +81,6 @@ impl From<&AgentDescription> for Description {
     }
 }
 
-/// Takes one `AgentToServer`. A missing, unknown, or revoked credential gets
-/// 401 and a body that is not an `AgentToServer` gets 400, both without a
-/// body.
 pub async fn exchange(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -150,8 +117,6 @@ pub async fn exchange(
             Err(error) => tracing::warn!(host = %host, %error, "cannot read an apply result"),
         }
     }
-    // The oldest approval the host has not reported on, on every answer
-    // until it does.
     let approval = syncs::pending(&state.pool, host).await?;
     let remote_config = remote_config(&state.pool, host).await?;
     let known_hash = message
@@ -167,7 +132,6 @@ pub async fn exchange(
         } else {
             0
         },
-        // Sent only when the agent does not have it yet.
         remote_config: (known_hash != Some(remote_config.config_hash.as_slice()))
             .then_some(remote_config),
         custom_capabilities: Some(CustomCapabilities {
@@ -190,7 +154,6 @@ pub async fn exchange(
         .into_response())
 }
 
-/// The configs of a host, as OpAMP's `remote_config`.
 async fn remote_config(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<AgentRemoteConfig> {
     let mut connection = pool.acquire().await?;
     let state = desired::State::load(&mut connection).await?;
@@ -218,12 +181,8 @@ async fn remote_config(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<AgentRem
     })
 }
 
-/// Keeps the last plan of `current`. It also updates
-/// the host's explicit packages, and records `drift.detected` when it shows
-/// a drift other than the last one recorded.
 async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx::Result<()> {
     if report.config != desired::CURRENT {
-        // An agent from before syncs may still plan a change's config.
         tracing::debug!(host = %host, config = report.config, "a plan of an unknown config");
         return Ok(());
     }
@@ -235,7 +194,6 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
     let text = |value: &str| value.replace('\0', "");
     let received = Utc::now();
     let reported = status::reported_at(report.at, received);
-    // A buffered plan older than the one kept says nothing new.
     let newer: Option<DateTime<Utc>> = sqlx::query_scalar(
         "SELECT reported_at FROM host_plans WHERE host_id = $1 AND config = $2 FOR UPDATE",
     )
@@ -325,15 +283,11 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
                 .execute(&mut *transaction)
                 .await?;
         }
-        // An error or an unknown state says nothing about drift.
         _ => {}
     }
     transaction.commit().await
 }
 
-/// Records one message. Returns whether the controller needs the agent's
-/// full state: a message without a description from an agent instance it
-/// does not know.
 async fn save(
     pool: &sqlx::PgPool,
     host: Uuid,
@@ -355,8 +309,6 @@ async fn save(
     .fetch_one(&mut *transaction)
     .await?;
     let same_instance = known == Some(instance);
-    // A message leaves out what did not change, so each value stays until a
-    // description carries a new one, unless another agent instance speaks.
     sqlx::query(
         "UPDATE hosts SET
              last_seen_at = now(),
@@ -387,7 +339,6 @@ async fn save(
             .map(|health| health.status.replace('\0', ""))
             .filter(|status| !status.is_empty()),
     )
-    // The host's OS is the one its agent runs on.
     .bind(description.as_ref().and_then(|d| match d.os.as_deref() {
         Some("darwin") => Some("macos"),
         Some("linux") => Some("linux"),
@@ -395,8 +346,6 @@ async fn save(
     }))
     .execute(&mut *transaction)
     .await?;
-    // A silence longer than an agent keeps: the host, or the controller,
-    // was down. Its reports from that time may follow, from its outbox.
     if let Some(from) = last_seen.filter(|from| now - *from > status::CONNECTED_WINDOW) {
         events::record_at(
             &mut transaction,

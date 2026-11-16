@@ -48,8 +48,6 @@ const reasons = {
   planning: "Waiting for a plan",
 } as const;
 
-/** The plans of a sync by package: what installs, updates, and removes,
- *  and on which hosts. A search and a host filter narrow the rows. */
 export function PlanByPackage({ hosts }: { hosts: SyncHost[] }) {
   const [query, setQuery] = useState("");
   const [only, setOnly] = useState(ALL);
@@ -205,7 +203,6 @@ export function PlanByPackage({ hosts }: { hosts: SyncHost[] }) {
   );
 }
 
-/** The hosts of a row. When there are many, a button opens the full list. */
 function Hosts({ row, planned }: { row: PackageRow; planned: number }) {
   const { text, more } = hostsLabel(row.hosts, planned);
   if (more === 0) return <>{text}</>;

@@ -30,9 +30,6 @@ const route = getRouteApi('/roles/$roleId');
 
 const NAME = /^[A-Za-z0-9._-]{1,63}$/;
 
-/** One role, edited in numbered steps: its name, then its items. Save shows
- *  what changes and asks to confirm. Hosts get roles on the host page. The
- *  built-in role is read-only. */
 export function RolePage() {
   const { roleId } = route.useParams();
   const role = useQuery(roleQuery(roleId));
@@ -82,7 +79,6 @@ export function RolePage() {
   );
 }
 
-/** The names other roles use for this kind, to suggest. */
 function namesOf(roles: Role[] | undefined, self: string, kind: Item['kind']): string[] {
   const names = new Set<string>();
   for (const role of roles ?? []) {
@@ -92,7 +88,6 @@ function namesOf(roles: Role[] | undefined, self: string, kind: Item['kind']): s
   return [...names].sort();
 }
 
-/** The built-in role's items, with no edit controls: sewa manages it. */
 function BuiltinRole({ role }: { role: Role }) {
   return (
     <div className="form-body">

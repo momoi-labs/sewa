@@ -21,7 +21,6 @@ import { createPasskey } from '../webauthn';
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void };
 
-/** Names a new passkey, then lets the browser create it. */
 export function AddPasskeyDialog({ open, onOpenChange }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

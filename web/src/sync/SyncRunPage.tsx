@@ -39,8 +39,6 @@ import { finishedAt, planState, plural, sameTargets, tally } from './sync';
 
 const route = getRouteApi('/sync/$syncId');
 
-/** One sync as steps: the hosts, their plans, the signature, and each
- *  host's apply. A finished step keeps a short summary. */
 export function SyncRunPage() {
   const { syncId } = route.useParams();
   const sync = useQuery(syncQuery(syncId));
@@ -79,14 +77,12 @@ export function SyncRunPage() {
   );
 }
 
-/** Signs the plans of every host with changes, or only `hosts`. */
 function useSign(sync: Sync) {
   const queryClient = useQueryClient();
   const toast = useToast();
   return useMutation({
     mutationFn: async (hosts?: string[]) => {
       const options = await syncApprovalOptions(sync.id, hosts);
-      // Sign only the plans the user reviewed.
       if (!sameTargets(sync, options.hosts, hosts)) throw new ApiFailure(409, 'stale_plans');
       return approveSync(sync.id, options.approval_id, await signApproval(options), hosts);
     },
@@ -109,7 +105,6 @@ function Run({ sync }: { sync: Sync }) {
   const inSync = states.filter((state) => state === 'in_sync').length;
   const offline = states.filter((state) => state === 'offline').length;
   const failedPlans = states.filter((state) => state === 'failed').length;
-  // Done with no signature: every host is in sync, or no plan can be signed.
   const allInSync = nothing && inSync === states.length;
   const approval = sync.approvals[0];
 
@@ -202,8 +197,6 @@ function Run({ sync }: { sync: Sync }) {
     },
   ];
 
-  // The hosts get their own StepList next to the run: a StepList nested in a
-  // step takes that step's state for every mark.
   return (
     <div className="stack">
       <Finished sync={sync} nothing={nothing} allInSync={allInSync} />
@@ -226,7 +219,6 @@ function Run({ sync }: { sync: Sync }) {
   );
 }
 
-/** The end of a sync: every host reported. */
 function Finished({ sync, nothing, allInSync }: { sync: Sync; nothing: boolean; allInSync: boolean }) {
   if (sync.status !== 'done') return null;
   const hosts = tally(sync);
@@ -288,8 +280,6 @@ function Finished({ sync, nothing, allInSync }: { sync: Sync; nothing: boolean; 
   );
 }
 
-/** The hosts of a started sync in one line: "12 hosts: 8 Linux, 4 macOS,
- *  1 disconnected". "Show all" opens their names in natural order. */
 function PickedHosts({ hosts }: { hosts: SyncHost[] }) {
   const [open, setOpen] = useState(false);
   const count = (keep: (host: SyncHost) => boolean) => hosts.filter(keep).length;
@@ -369,7 +359,6 @@ function Apply({ sync, sign }: { sync: Sync; sign: ReturnType<typeof useSign> })
               ))}
             </LogView>
           )}
-          {/* A retry signs this plan, so it shows first. */}
           {planState(host) === 'changes' && <PlanByPackage hosts={[host]} />}
           {sign.isError && sign.variables?.[0] === host.id && <PasskeyError error={sign.error} thing="sync" />}
           <div className="row-wrap">

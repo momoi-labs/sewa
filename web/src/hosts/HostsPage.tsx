@@ -29,7 +29,6 @@ import { HostStatusBadge } from './HostStatusBadge';
 
 const COLUMNS = 5;
 
-/** Every host with its status, read again every few seconds. */
 export function HostsPage() {
   const hosts = useQuery(hostsQuery);
   const [adding, setAdding] = useState(false);

@@ -22,7 +22,6 @@ const messages: Record<string, { title: string; body: string }> = {
   },
 };
 
-/** An error from the browser's passkey prompt, or from the API. */
 export function PasskeyError({ error, thing }: { error: unknown; thing?: string }) {
   if (!(error instanceof PasskeyFailure)) return <ErrorAlert error={error} thing={thing} />;
   const message = messages[error.reason] ?? messages.failed!;

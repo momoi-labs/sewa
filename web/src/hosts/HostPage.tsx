@@ -46,8 +46,6 @@ import { HostStatusBadge } from './HostStatusBadge';
 
 const route = getRouteApi('/hosts/$hostId');
 
-/** One host: what its agent reports, its desired state, its drift, and its
- *  events. */
 export function HostPage() {
   const { hostId } = route.useParams();
   const host = useQuery(hostQuery(hostId));
@@ -181,7 +179,6 @@ function Summary({ host, now }: { host: Host; now: number }) {
   );
 }
 
-/** One sentence for each kind of event. */
 function by(event: HostEvent): string {
   return typeof event.data.by === 'string' ? event.data.by : 'Someone';
 }

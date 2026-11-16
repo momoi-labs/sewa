@@ -6,8 +6,6 @@ import { render } from '@testing-library/react';
 import { queryDefaults } from './api';
 import { createAppRouter } from './router';
 
-/** Renders the app at `path`, with a fresh router and query cache. Queries do
- *  not retry unless `queries` says so. */
 export function renderRoute(path: string, queries: Record<string, unknown> = { retry: false }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { ...queryDefaults.queries, refetchInterval: false, ...queries } },
@@ -24,7 +22,6 @@ export function renderRoute(path: string, queries: Record<string, unknown> = { r
 
 type Reply = { status: number; body?: unknown };
 
-/** Replaces fetch with canned replies by "METHOD /path". Unknown calls get a 404. */
 export function mockApi(replies: Record<string, Reply | ((body: unknown) => Reply)>) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

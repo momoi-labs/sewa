@@ -27,7 +27,6 @@ import { AddRoleDialog } from './AddRoleDialog';
 
 const COLUMNS = 4;
 
-/** The OS a role's items go to: one OS when every item names it. */
 export function roleOs(role: Role): string {
   const kinds = new Set(role.items.map((item) => item.os ?? null));
   if (kinds.size === 1 && kinds.has('linux')) return 'Linux';
@@ -35,8 +34,6 @@ export function roleOs(role: Role): string {
   return 'Linux and macOS';
 }
 
-/** Every role, the built-in role first, with its OS and how many items and
- *  hosts it has. */
 export function RolesPage() {
   const roles = useQuery(rolesQuery);
   const [adding, setAdding] = useState(false);

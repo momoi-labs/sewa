@@ -1,22 +1,3 @@
-//! Syncs, under `/api/syncs`: an admin picks hosts, reads each host's plan
-//! of its desired state, signs the plans with a passkey, and each agent
-//! applies its plan and reports back.
-//!
-//! A host's step in a sync:
-//!
-//! - `picked`: its plan is live, read from the agent's last plan of
-//!   `current`, until a signature;
-//! - `in_sync` or `skipped` at the signature: nothing to do, or no plan to
-//!   sign (offline, not planned yet, or an error);
-//! - `waiting` once signed, until its agent reports `applied`, `failed`,
-//!   or `replan` (its plan changed before it applied). A failed or replan
-//!   host can be signed again.
-//!
-//! An approval binds the sync id and, for each host, the agent instance,
-//! the config hash, and the plan hash the person read (see the
-//! `sewa-approval` crate). The approval keeps its `change_id` field name,
-//! which agents already installed read, and the field carries the sync id.
-
 use std::collections::{BTreeSet, HashMap};
 
 use axum::extract::{Path, State};
@@ -35,10 +16,8 @@ use crate::status::{self, Status};
 use crate::whois::Identity;
 use crate::{AppState, desired, passkeys};
 
-/// The longest log the controller keeps of one apply.
 const LOG_LIMIT: usize = 64 * 1024;
 
-/// How many syncs `GET /api/syncs` returns.
 const LIST_LIMIT: i64 = 20;
 
 fn conflict(code: &'static str) -> Failure {
@@ -58,17 +37,10 @@ pub struct Plan {
     pub config_hash: String,
     pub plan_hash: String,
     pub exit_code: i32,
-    /// The agent's JSON plan: mise's, with the packages the agent installs
-    /// itself first.
     pub plan: Option<serde_json::Value>,
     pub error: Option<String>,
-    /// When the agent planned, by its clock.
     pub reported_at: DateTime<Utc>,
-    /// When the controller got the plan, if late: the agent kept it while
-    /// it could not reach the controller.
     pub received_at: Option<DateTime<Utc>>,
-    /// The plan is of another config than the one the host gets now, so a
-    /// newer plan is on its way.
     pub stale: bool,
 }
 
@@ -104,7 +76,6 @@ pub fn plan(row: PlanRow, config_hash: Option<&str>) -> Plan {
 #[derive(Debug, Serialize)]
 pub struct HostResult {
     pub plan_hash: Option<String>,
-    /// The agent's apply log.
     pub log: Option<String>,
     pub reported_at: Option<DateTime<Utc>>,
     pub received_at: Option<DateTime<Utc>>,
@@ -118,12 +89,8 @@ pub struct SyncHost {
     pub status: Status,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub roles: Vec<Named>,
-    /// `picked`, `in_sync`, `skipped`, `waiting`, `applied`, `failed`, or
-    /// `replan`.
     pub step: String,
-    /// The host's last plan of its desired state.
     pub plan: Option<Plan>,
-    /// What the agent reported, once signed.
     pub result: Option<HostResult>,
 }
 
@@ -141,15 +108,11 @@ pub struct Sync {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
-    /// `planning` (a picked host still plans), `ready` (plans to sign),
-    /// `applying` (a signed host has not reported), or `done`.
     pub status: &'static str,
     pub hosts: Vec<SyncHost>,
     pub approvals: Vec<ApprovalEntry>,
 }
 
-/// Whether a plan can be signed: an agent instance, a plan of the config
-/// the host gets now, and a plan mise could make.
 fn ready(plan: Option<&Plan>) -> bool {
     plan.is_some_and(|plan| !plan.stale && matches!(plan.exit_code, 0 | 2))
 }
@@ -188,7 +151,6 @@ type SyncHostRow = (
     Option<DateTime<Utc>>,
 );
 
-/// A sync as the API shows it, read in the caller's connection.
 pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
     let row: Option<(DateTime<Utc>, String)> =
         sqlx::query_as("SELECT created_at, created_by FROM syncs WHERE id = $1")
@@ -292,7 +254,6 @@ pub struct SyncEntry {
     pub host_count: usize,
 }
 
-/// `GET /api/syncs`: the latest syncs, newest first.
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<SyncEntry>>> {
     let mut connection = state.pool.acquire().await?;
     let ids: Vec<Uuid> =
@@ -314,7 +275,6 @@ pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<SyncEntry
     Ok(Json(entries))
 }
 
-/// `GET /api/syncs/{id}`: a sync and where each of its hosts stands.
 pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Sync>> {
     let id = sync_id(&id)?;
     let mut connection = state.pool.acquire().await?;
@@ -326,9 +286,6 @@ pub struct NewSync {
     pub hosts: Vec<Uuid>,
 }
 
-/// `POST /api/syncs`: starts a sync of the hosts picked, which must be
-/// enrolled. 400 `no_hosts` or `unknown_host`. Records `sync.created` for
-/// each host.
 pub async fn create(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -381,10 +338,6 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(sync)))
 }
 
-/// What a signature of the sync would cover now, as approval
-/// `approval_id`: the hosts to sign, the picked hosts already in sync, and
-/// the picked hosts without a plan to sign. Only the hosts in `only` count,
-/// when given. 404 `not_found`, 409 `nothing_to_approve`.
 struct Targets {
     approval: Approval,
     in_sync: Vec<Uuid>,
@@ -444,29 +397,20 @@ async fn targets(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Only {
-    /// Sign only these hosts, such as one failed host to retry.
     #[serde(default)]
     pub hosts: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ApprovalOptions {
-    /// Unpadded base64url: the SHA-256 of `signed_text`.
     pub challenge: String,
     pub rp_id: String,
-    /// The signed-in user's credential ids.
     pub allow_credentials: Vec<String>,
-    /// The text the challenge hashes.
     pub signed_text: String,
     #[serde(flatten)]
     pub approval: Approval,
 }
 
-/// `POST /api/syncs/{id}/approval`: what a signature would sign now, and
-/// the challenge to sign. 409 `no_passkey` when the signed-in user has no
-/// passkey, `nothing_to_approve` when no host has a plan to sign or is in
-/// sync. With no host to sign, the challenge signs an empty list, and the
-/// approve call only marks the hosts in sync.
 pub async fn options(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -474,7 +418,6 @@ pub async fn options(
     body: axum::body::Bytes,
 ) -> ApiResult<Json<ApprovalOptions>> {
     let id = sync_id(&id)?;
-    // The body is optional.
     let only: Only = if body.is_empty() {
         Only::default()
     } else {
@@ -482,7 +425,6 @@ pub async fn options(
             .map_err(|_| Failure::new(StatusCode::BAD_REQUEST, "invalid_body"))?
     };
     let mut connection = state.pool.acquire().await?;
-    // A new id for each signature, so an agent applies it once.
     let targets = targets(&mut connection, id, Uuid::new_v4(), only.hosts.as_deref()).await?;
     let keys = passkeys::keys(&mut connection, &state.public_url, Some(&identity.login)).await?;
     if keys.keys.is_empty() {
@@ -499,7 +441,6 @@ pub async fn options(
 
 #[derive(Debug, Deserialize)]
 pub struct Approve {
-    /// The `approval_id` of the options it signs.
     pub approval_id: Uuid,
     #[serde(flatten)]
     pub assertion: Assertion,
@@ -507,12 +448,6 @@ pub struct Approve {
     pub hosts: Option<Vec<Uuid>>,
 }
 
-/// `POST /api/syncs/{id}/approve`: signs the sync with an assertion of the
-/// challenge from `options`, with the same `hosts`. The assertion must
-/// come from a passkey of the signed-in user (400 `invalid_assertion`
-/// otherwise), and sign the plans as they are now (409 `plans_changed`
-/// otherwise). Each approval id signs once (409 `plans_changed`). Each signed host waits for its agent; a picked host in sync
-/// becomes `in_sync`, and one without a plan `skipped`.
 pub async fn approve(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -615,7 +550,6 @@ pub async fn approve(
     Ok(Json(sync))
 }
 
-/// The oldest approval a host has not reported on, as the agent gets it.
 pub async fn pending(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<Option<Signed>> {
     let row: Option<(Uuid, Uuid, serde_json::Value, serde_json::Value)> = sqlx::query_as(
         "SELECT a.id, a.sync_id, a.hosts, a.assertion
@@ -639,8 +573,6 @@ pub async fn pending(pool: &sqlx::PgPool, host: Uuid) -> sqlx::Result<Option<Sig
     }))
 }
 
-/// Keeps what an agent did with an approval it was sent, once, and
-/// records `plan.applied`, `apply.failed`, or `apply.replan`.
 pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) -> sqlx::Result<()> {
     let kind = match outcome.status.as_str() {
         "applied" => events::PLAN_APPLIED,
@@ -715,16 +647,12 @@ pub struct EditEntry {
 
 #[derive(Debug, Serialize)]
 pub struct Edits {
-    /// When the last sync started, or null before the first.
     pub since: Option<DateTime<Utc>>,
-    /// The edits of roles and hosts since then, oldest first.
     pub edits: Vec<EditEntry>,
 }
 
-/// How many edits `GET /api/syncs/edits` returns.
 const EDIT_LIMIT: i64 = 200;
 
-/// `GET /api/syncs/edits`: the edits since the last sync started.
 pub async fn edits(State(state): State<AppState>) -> ApiResult<Json<Edits>> {
     let mut connection = state.pool.acquire().await?;
     let since: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT max(created_at) FROM syncs")
@@ -783,8 +711,6 @@ pub async fn edits(State(state): State<AppState>) -> ApiResult<Json<Edits>> {
     }))
 }
 
-/// The steps of each host in the open syncs, for a host page: whether a
-/// sync waits on it.
 pub async fn open_steps(
     connection: &mut PgConnection,
     host: Uuid,

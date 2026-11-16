@@ -1,25 +1,3 @@
-//! The install script at `GET /install`, the agent binaries it downloads
-//! from `GET /files/{name}`, and the one-line command the API returns.
-//!
-//! Adapted from pg-yard's `crates/cell/src/install.rs` and
-//! `crates/cell/src/probe_files.rs`. The script holds the controller's
-//! address, the checksums of the binaries, and the approver keys of the
-//! moment, which it pins into the agent: an agent applies only what one of
-//! them signed, and only the install pins keys. The install token is the
-//! script's argument: it never goes into a URL, so no access log sees it.
-//! The script downloads `sewa-agent` for the machine's OS and architecture,
-//! checks it against the SHA-256 in the script, enrolls, and installs the
-//! service:
-//!
-//! - Linux: a systemd unit that runs the agent as root.
-//! - macOS: a launchd daemon that runs the agent as a user the script asks
-//!   for. The default is the user who runs the installer. When Homebrew is
-//!   missing, the script installs it for that user first with Homebrew's
-//!   own installer: the agent installs the built-in `bootstrap` role's
-//!   packages, mise first, with brew, and never installs Homebrew itself.
-//!   Homebrew refuses root and needs an admin user and the Xcode command
-//!   line tools; the script checks both and stops with what to do.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -32,7 +10,6 @@ use axum::response::{IntoResponse, Response};
 use sewa_approval::Pinned;
 use sha2::{Digest, Sha256};
 
-/// The machines the install script installs on, as Rust targets.
 pub const TARGETS: [&str; 4] = [
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
@@ -40,19 +17,14 @@ pub const TARGETS: [&str; 4] = [
     "aarch64-apple-darwin",
 ];
 
-/// The name of the agent binary for `target`.
 pub fn agent_binary(target: &str) -> String {
     format!("sewa-agent-{target}")
 }
 
-/// The agent binaries the controller serves, by file name.
 #[derive(Default)]
 pub struct AgentFiles(HashMap<String, Bytes>);
 
 impl AgentFiles {
-    /// Reads the binary of every target in [`TARGETS`] from `dir`. A
-    /// missing file stops the controller, so it never hands out a command
-    /// that cannot finish.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let mut files = HashMap::new();
         for target in TARGETS {
@@ -64,14 +36,12 @@ impl AgentFiles {
         Ok(Self(files))
     }
 
-    /// The same files, with `bytes` as the binary of `target`. For tests.
     pub fn with_binary(mut self, target: &str, bytes: &[u8]) -> Self {
         self.0
             .insert(agent_binary(target), Bytes::copy_from_slice(bytes));
         self
     }
 
-    /// The SHA-256 of each target's binary, in hex.
     pub fn sums(&self) -> Vec<(&'static str, String)> {
         TARGETS
             .iter()
@@ -87,7 +57,6 @@ impl AgentFiles {
     }
 }
 
-/// `GET /files/{name}`: one agent binary, or 404. They hold no secret.
 pub async fn serve_file(
     State(files): State<Arc<AgentFiles>>,
     UrlPath(name): UrlPath<String>,
@@ -102,8 +71,6 @@ pub async fn serve_file(
     }
 }
 
-/// `GET /install`: the script, as text, so a browser shows it too. It is
-/// rendered for each request, with the approver keys of that moment.
 pub async fn serve_script(
     State(state): State<crate::AppState>,
 ) -> crate::error::ApiResult<Response> {
@@ -117,22 +84,16 @@ pub async fn serve_script(
         .into_response())
 }
 
-/// Quotes a value for a POSIX shell: inside single quotes nothing expands,
-/// and a single quote itself becomes `'\''`.
 fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// The command the API returns for a new host. The script runs as root on
-/// both systems: it installs a system service.
 pub fn command(public_url: &str, token: &str) -> String {
     let script_url = sh_quote(&format!("{public_url}/install"));
     let token = sh_quote(token);
     format!("curl -fsSL {script_url} | sudo sh -s -- {token}")
 }
 
-/// The install script for a controller at `public_url`, which serves
-/// binaries with `sums`, and whose agents trust the `pinned` keys.
 pub fn script(public_url: &str, sums: &[(&str, String)], pinned: &Pinned) -> String {
     let server = sh_quote(public_url);
     let approvers = sh_quote(&serde_json::to_string(pinned).expect("keys serialize"));
@@ -323,7 +284,6 @@ mod tests {
 
     use super::*;
 
-    /// Runs `sh` with `args` and the script on stdin.
     fn sh(args: &[&str], script: &str) -> Output {
         let mut child = Command::new("sh")
             .args(args)
@@ -395,7 +355,6 @@ mod tests {
             r#"approvers='{"rp_id":"sewa.example","origin":"https://sewa.example","keys":[{"id":"a'\''b","public_key":"key","login":"admin@example.com"}]}'"#
         ));
         assert!(script.contains("printf '%s\\n' \"$approvers\" | \"$bin\" pin\n"));
-        // The shell reads the value back as the JSON.
         let output = Command::new("sh")
             .args([
                 "-c",
@@ -424,11 +383,6 @@ mod tests {
             )]
         );
     }
-    /// Runs the script's Homebrew step for a user `alex` on a fake Mac:
-    /// `uname`, `id`, `visudo`, `curl`, and `sudo` are fakes in `$tmp/bin`,
-    /// and the fake installer puts a fake `brew` in `$tmp/prefix/bin`.
-    /// `setup` runs after the fakes, before the step. Nothing touches this
-    /// machine's sudoers or Homebrew.
     fn homebrew(setup: &str) -> (Output, std::path::PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_owned();
