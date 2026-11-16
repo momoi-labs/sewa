@@ -73,10 +73,25 @@ impl Spec {
     }
 }
 
+/// Reads a version from JSON. Any case of `latest`, with or without
+/// surrounding spaces, becomes `latest`: the agent only knows that spelling.
+/// Every version a client sends (role items, host edits) passes through here.
+fn version_from_json<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let version = String::deserialize(deserializer)?;
+    Ok(if version.trim().eq_ignore_ascii_case("latest") {
+        "latest".to_owned()
+    } else {
+        version
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     pub kind: Kind,
     pub name: String,
+    #[serde(deserialize_with = "version_from_json")]
     pub version: String,
     /// `linux` or `macos` for an item of one OS only, or null for every OS.
     #[serde(default)]
@@ -127,6 +142,7 @@ pub enum Edit {
     HostItemSet {
         kind: Kind,
         name: String,
+        #[serde(deserialize_with = "version_from_json")]
         version: String,
     },
     /// Drops an item that the host's roles declare, on this host only.

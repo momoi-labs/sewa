@@ -561,6 +561,39 @@ async fn roles_save_directly_and_record_what_changed(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn latest_is_stored_in_lower_case_whatever_the_client_sends(pool: PgPool) {
+    let app = app(pool.clone());
+    let role = create_role(&app, "base").await;
+    let items: Vec<Value> = ["Latest", "LATEST", " Latest "]
+        .iter()
+        .enumerate()
+        .map(|(i, version)| json!({ "kind": "package", "name": format!("p{i}"), "version": version }))
+        .collect();
+    let (status, saved) = save_role(&app, &role, json!({ "name": "base", "items": items })).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT version FROM role_items WHERE name LIKE 'p%' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, ["latest", "latest", "latest"]);
+
+    let (host, _) = create_host(&app, "box").await;
+    let (status, body) = host_edits(
+        &app,
+        &host,
+        json!([{ "op": "host_item_set", "kind": "package", "name": "jq", "version": "Latest" }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let adjusted: Vec<String> = sqlx::query_scalar("SELECT version FROM host_adjustments")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(adjusted, ["latest"]);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
 async fn the_bootstrap_role_is_built_in(pool: PgPool) {
     let app = app(pool.clone());
     let (_, roles) = json_call(&app, ADMIN, "GET", "/api/roles", None).await;
