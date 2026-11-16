@@ -28,17 +28,14 @@ import { type Diff, diffSize, itemKey, kindNames } from './items';
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** The role as saved. */
   role: Role;
   name: string;
   items: Item[];
   diff: Diff;
   onSaved: (role: Role) => void;
-  /** A failure the form shows next to its field, such as a taken name. */
   onFailed: (error: unknown) => void;
 };
 
-/** The items a save adds, removes, and changes, and a button to save them. */
 export function SaveRoleDialog(props: Props) {
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>

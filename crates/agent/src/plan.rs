@@ -1,28 +1,3 @@
-//! Plans a config from the controller with `mise bootstrap plan`, and lists
-//! the packages the package manager says were installed explicitly.
-//!
-//! Each config lives in its own directory under `<state>/configs`. mise
-//! must read that file and nothing else, so each run:
-//!
-//! - drops every `MISE_*` variable the agent inherited, such as `MISE_ENV`;
-//! - points `MISE_SYSTEM_CONFIG_DIR` (default `/etc/mise`, with its
-//!   `conf.d`), `MISE_CONFIG_DIR` (default `~/.config/mise`), and
-//!   `MISE_GLOBAL_CONFIG_FILE` at an empty directory of the agent;
-//! - sets `MISE_CEILING_PATHS` to `<state>/configs`, so mise looks for no
-//!   `mise.toml` in that directory or above it;
-//! - trusts `<state>/configs` with `MISE_TRUSTED_CONFIG_PATHS`, so mise does
-//!   not ask.
-//!
-//! The agent applies only `current`, and only after it checked a signed
-//! approval of its plan (see `worker`). Applying runs `mise bootstrap` with
-//! the same isolation, limited to the parts the controller renders:
-//! packages and tools.
-//!
-//! Native packages (see `native`) are planned and applied first, without
-//! mise. Their resources join mise's plan, and the plan hash covers both.
-//! When mise is missing, its items are listed as `create` if a native item
-//! installs mise, so the same run applies them; otherwise they fail alone.
-
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
 use std::io;
@@ -35,17 +10,12 @@ use sha2::{Digest, Sha256};
 
 use crate::native::{self, Native, Split};
 
-/// The config of the approved state.
 pub const CURRENT: &str = "current";
 
-/// The longest error text sent to the controller.
 const ERROR_LIMIT: usize = 4000;
 
-/// The longest apply log sent to the controller. The end is kept.
 const LOG_LIMIT: usize = 32 * 1024;
 
-/// The native items of a config and what is left for mise, next to its
-/// `mise.toml`, for the apply.
 const SPLIT: &str = "split.json";
 
 const MISE_MISSING: &str = "mise is missing";
@@ -58,8 +28,6 @@ pub fn hash(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 
-/// The directory name of a config name: `current`, or `change-<uuid>` for
-/// `change/<uuid>`. Any other name is refused.
 pub fn dir_name(config: &str) -> Option<String> {
     if config == CURRENT {
         return Some(CURRENT.to_owned());
@@ -69,13 +37,11 @@ pub fn dir_name(config: &str) -> Option<String> {
     Some(format!("change-{}", id.hyphenated()))
 }
 
-/// What one plan found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub config: String,
     pub config_hash: String,
     pub plan_hash: String,
-    /// 0 in sync, 2 changes, 1 an error or an unknown state.
     pub exit_code: i32,
     pub plan: Option<Value>,
     pub error: Option<String>,
@@ -83,13 +49,9 @@ pub struct Plan {
 
 pub struct Planner {
     pub mise: PathBuf,
-    /// Where else to look for mise when `mise` is a bare name that is not
-    /// in `PATH`: Homebrew installs it outside launchd's `PATH`.
     pub mise_fallbacks: Vec<PathBuf>,
     pub native: Native,
-    /// `<state>/configs`.
     pub configs: PathBuf,
-    /// An empty directory for mise's system and global config.
     pub empty: PathBuf,
 }
 
@@ -107,13 +69,10 @@ impl Planner {
         }
     }
 
-    /// The directory of a config.
     pub fn dir(&self, config: &str) -> Option<PathBuf> {
         Some(self.configs.join(dir_name(config)?))
     }
 
-    /// The `mise` command with only the config of `dir`, and the inherited
-    /// environment without its `MISE_*` variables.
     pub fn command(
         &self,
         dir: &Path,
@@ -138,7 +97,6 @@ impl Planner {
         command
     }
 
-    /// The mise binary, if there is one.
     pub fn find_mise(&self) -> Option<PathBuf> {
         let mut candidates = vec![self.mise.clone()];
         if self.mise.components().count() == 1 {
@@ -147,7 +105,6 @@ impl Planner {
         native::find(&candidates)
     }
 
-    /// Writes the config into its directory and plans it.
     pub fn plan(&self, config: &str, body: &[u8]) -> Plan {
         let config_hash = hash(body);
         let failed = |error: String| Plan {
@@ -169,7 +126,6 @@ impl Planner {
         if !split.native.is_empty() {
             match self.native.plan(&split.native) {
                 Ok(resources) => natives = resources,
-                // Nothing is planned on top of native items that fail.
                 Err(error) => {
                     let plan = json!({
                         "resources": split
@@ -208,8 +164,6 @@ impl Planner {
         if let Some(resources) = plan["resources"].as_array_mut() {
             resources.splice(0..0, natives);
         }
-        // A failed mise part does not hold back native changes: they
-        // apply, and the mise items fail alone.
         let exit_code = match (exit_code, changes) {
             (_, true) => 2,
             (0 | 2, false) => exit_code,
@@ -225,8 +179,6 @@ impl Planner {
         }
     }
 
-    /// Plans what is left for mise. Returns the exit code, the plan, the
-    /// raw output the plan hash covers, and the error.
     fn plan_mise(
         &self,
         dir: &Path,
@@ -284,9 +236,6 @@ impl Planner {
         (exit_code, plan, output.stdout, error)
     }
 
-    /// Applies the config as last written: its native packages first, then
-    /// the rest with `mise bootstrap`. Returns 0 when both succeeded, and
-    /// their output.
     pub fn apply(&self, config: &str) -> (i32, String) {
         let Some(dir) = self.dir(config) else {
             return (1, format!("unknown config name {config}"));
@@ -347,7 +296,6 @@ impl Planner {
         )
     }
 
-    /// Removes the directories of configs the controller no longer sends.
     pub fn keep_only(&self, configs: &[&str]) {
         let keep: Vec<String> = configs.iter().filter_map(|c| dir_name(c)).collect();
         let Ok(entries) = fs::read_dir(&self.configs) else {
@@ -362,7 +310,6 @@ impl Planner {
     }
 }
 
-/// The end of an apply log, at most `LOG_LIMIT` long.
 fn limit(mut log: String) -> String {
     if log.len() > LOG_LIMIT {
         let mut start = log.len() - LOG_LIMIT;
@@ -385,9 +332,6 @@ fn truncate(text: &str) -> String {
     format!("{}…", &text[..end])
 }
 
-/// The packages the package manager lists as installed explicitly, and
-/// the manager's name: `brew leaves` on macOS, `pacman -Qqe` on Arch Linux,
-/// `apt-mark showmanual` on Debian and Ubuntu.
 pub fn explicit_packages() -> Option<(&'static str, Vec<String>)> {
     let candidates: &[(&str, &str, &[&str])] = if cfg!(target_os = "macos") {
         &[("brew", "brew", &["leaves"])]
@@ -418,8 +362,6 @@ pub fn explicit_packages() -> Option<(&'static str, Vec<String>)> {
     })
 }
 
-/// The custom message body of a plan, made at `at` in Unix milliseconds. A
-/// plan of `current` carries the explicit packages too.
 pub fn report(plan: &Plan, explicit: Option<&(&str, Vec<String>)>, at: i64) -> Vec<u8> {
     let mut value = json!({
         "at": at,
@@ -480,10 +422,6 @@ mod tests {
         assert!(envs.contains(&("MISE_CEILING_PATHS".to_owned(), "/state/configs".to_owned())));
     }
 
-    /// Runs the real mise when it is installed. The machine's
-    /// `/etc/mise/conf.d` and `~/.config/mise/config.toml`, a `mise.toml`
-    /// above the config, and inherited `MISE_*` variables that point
-    /// elsewhere must not reach mise.
     #[test]
     fn mise_reads_only_the_config() {
         if Command::new("mise").arg("--version").output().is_err() {

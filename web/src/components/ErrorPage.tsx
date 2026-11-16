@@ -10,16 +10,12 @@ import repairDark from './error-art/error-500-dark.svg?inline';
 import surprised from './error-art/error-offline.svg?inline';
 import surprisedDark from './error-art/error-offline-dark.svg?inline';
 
-/** The art is inlined in the bundle: the page often shows when the
- *  controller that serves the files is down. */
 const arts = {
   angry: [angry, angryDark],
   repair: [repair, repairDark],
   surprised: [surprised, surprisedDark],
 } as const;
 
-/** The cat for an error: angry for a 403, repair for a 5xx, and surprised
- *  for anything else, such as no answer or a 404. */
 export function errorArt(error: unknown): keyof typeof arts {
   if (!(error instanceof ApiFailure)) return 'surprised';
   if (error.status === 403 || error.code === 'not_admin') return 'angry';
@@ -27,9 +23,6 @@ export function errorArt(error: unknown): keyof typeof arts {
   return 'surprised';
 }
 
-/** The full page for a load that failed with `not_admin`, a 5xx, or no answer:
- *  a brand illustration, the status code, what happened, and one action. It
- *  has no shell around it. */
 export function ErrorPage({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const titleId = useId();
   const status = error instanceof ApiFailure ? error.status : 500;

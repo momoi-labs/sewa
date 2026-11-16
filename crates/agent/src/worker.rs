@@ -1,14 +1,3 @@
-//! What the agent does with the controller's configs: plans each new one,
-//! plans the current desired state again on start and once a day to find
-//! drift, applies `current` when a pinned approver key signed its plan, and
-//! keeps the plans and apply results in the outbox for the controller.
-//!
-//! The worker keeps what it needs on disk, so it works on when the
-//! controller is down and after a restart: the last remote config, the
-//! config hash each config was planned with, the approvals it answered, and
-//! the outbox. While the controller is down it applies nothing: an apply
-//! needs an approval the controller sends.
-
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,22 +15,14 @@ use crate::outbox::{self, Outbox};
 use crate::plan::{self, CURRENT, Plan, Planner};
 use crate::state::State;
 
-/// How often the agent plans the current desired state again.
 pub const DRIFT_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// The last remote config, as OpAMP encodes it.
 const REMOTE_CONFIG: &str = "remote_config.pb";
-/// The config hash each config was last planned with.
 const PLANNED: &str = "planned.json";
-/// The approvals the agent answered, newest last.
 const ANSWERED: &str = "answered.json";
-/// The approval being applied. It exists only while mise applies.
 const APPLYING: &str = "applying.json";
-/// How many answered approvals the agent remembers.
 const ANSWERED_LIMIT: usize = 256;
 
-/// What the agent writes down before it applies, so a restart in the
-/// middle still reports.
 #[derive(Debug, Serialize, Deserialize)]
 struct Applying {
     approval_id: Uuid,
@@ -51,25 +32,17 @@ struct Applying {
 
 pub struct Worker {
     planner: Planner,
-    /// Where the pinned approver keys and the worker's files are.
     state: State,
     instance_uid: Uuid,
-    /// The approvals the agent answered, newest last.
     answered: Vec<Uuid>,
-    /// The hash of the last remote config, sent back on every message.
     remote_config_hash: Vec<u8>,
-    /// Each config and the hash of its body.
     configs: BTreeMap<String, (Vec<u8>, String)>,
-    /// The config hash each config was last planned with.
     planned: BTreeMap<String, String>,
     current_planned_at: Option<Instant>,
     health: Option<ComponentHealth>,
-    /// Plan reports and apply results the controller has not received
-    /// yet.
     pub outbox: Outbox,
 }
 
-/// Now, in Unix milliseconds.
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -79,7 +52,6 @@ pub fn now_ms() -> i64 {
 }
 
 impl Worker {
-    /// A worker with what an earlier run left in the state directory.
     pub fn new(planner: Planner, state: State, instance_uid: Uuid) -> Self {
         let outbox = Outbox::open(state.dir.join("outbox"), outbox::LIMIT);
         let answered = state
@@ -112,9 +84,6 @@ impl Worker {
         worker
     }
 
-    /// What the agent does when it starts, before it reaches the
-    /// controller: reports an apply that a restart cut short, plans the
-    /// configs it did not plan yet, and plans the approved state again.
     pub fn boot(&mut self) {
         if let Some(applying) = self
             .state
@@ -145,11 +114,6 @@ impl Worker {
         }
     }
 
-    /// Sends one message with `send`, the exchange with the controller.
-    /// The message carries the remote config status, the health, and the
-    /// oldest report of the outbox, which leaves the outbox only when the
-    /// controller answers. Then the worker takes the answer's config and
-    /// approval.
     pub fn exchange(
         &mut self,
         mut message: AgentToServer,
@@ -163,16 +127,12 @@ impl Worker {
         if let Some(remote) = answer.remote_config {
             self.receive(remote);
         }
-        // After the config of the same answer, which the approval may be
-        // about.
         if let Some(custom) = &answer.custom_message {
             self.approval(custom);
         }
         Ok(())
     }
 
-    /// Adds the remote config status, the health, and the oldest report of
-    /// the outbox to a message.
     pub fn fill(&self, message: &mut AgentToServer) {
         if !self.remote_config_hash.is_empty() {
             message.remote_config_status = Some(RemoteConfigStatus {
@@ -185,8 +145,6 @@ impl Worker {
         message.custom_message = self.outbox.front().cloned();
     }
 
-    /// Takes a new remote config: keeps it on disk, drops configs the
-    /// controller no longer sends, and plans the ones that changed.
     pub fn receive(&mut self, remote: AgentRemoteConfig) {
         if let Err(error) = self.state.write(REMOTE_CONFIG, &remote.encode_to_vec()) {
             eprintln!("sewa-agent: cannot keep the config on disk: {error}");
@@ -214,7 +172,6 @@ impl Worker {
             .retain(|name, _| self.configs.contains_key(name));
     }
 
-    /// Plans each config whose body changed since its last plan.
     fn plan_changed(&mut self) {
         let changed: Vec<String> = self
             .configs
@@ -227,7 +184,6 @@ impl Worker {
         }
     }
 
-    /// Plans the current desired state again when a day has passed.
     pub fn tick(&mut self, now: Instant) {
         let due = self
             .current_planned_at
@@ -237,11 +193,6 @@ impl Worker {
         }
     }
 
-    /// Takes an approval from the controller. Applies `current` only when
-    /// a pinned approver key signed this change and this agent's plan, the
-    /// config is the one approved, and a fresh plan still has the approved
-    /// hash. Queues the result, and the plan after an apply. Each approval
-    /// is answered once, across restarts.
     pub fn approval(&mut self, custom: &CustomMessage) {
         if custom.capability != sewa_approval::CAPABILITY
             || custom.r#type != sewa_approval::APPROVAL_TYPE
@@ -280,7 +231,6 @@ impl Worker {
             at: Some(now_ms()),
         };
         let replan = status == "applied" || status == "failed" && plan_hash_known(&outcome);
-        // The marker goes only once the result is on disk.
         if self.report_outcome(outcome) {
             self.state.remove(APPLYING);
         }
@@ -289,7 +239,6 @@ impl Worker {
         }
     }
 
-    /// Puts a result in the outbox. Returns whether it reached the disk.
     fn report_outcome(&mut self, outcome: Outcome) -> bool {
         self.outbox.push(CustomMessage {
             capability: sewa_approval::CAPABILITY.to_owned(),
@@ -298,7 +247,6 @@ impl Worker {
         })
     }
 
-    /// `applied`, `failed`, or `replan`, the fresh plan hash, and the log.
     fn check_and_apply(&mut self, signed: &Signed) -> (&'static str, Option<String>, String) {
         let refused = |why: String| ("failed", None, format!("refused: {why}"));
         let pinned = self.state.approvers();
@@ -386,14 +334,10 @@ impl Worker {
     }
 }
 
-/// Whether a failed outcome got as far as mise, so the state may have
-/// changed and needs a new plan.
 fn plan_hash_known(outcome: &Outcome) -> bool {
     outcome.plan_hash.is_some() && !outcome.log.starts_with("refused: ")
 }
 
-/// `in_sync` when the plan has no changes, `drift` when it has, `error`
-/// when mise failed or found a state it cannot read.
 pub fn health(plan: &Plan) -> ComponentHealth {
     let status = match plan.exit_code {
         0 => "in_sync",
@@ -457,7 +401,6 @@ mod tests {
             vec![1, 2]
         );
         assert_eq!(message.custom_message, Some(queued));
-        // It leaves the outbox only once the controller answers.
         assert_eq!(worker.outbox.len(), 1);
     }
 
@@ -477,9 +420,6 @@ mod tests {
         const ORIGIN: &str = "https://sewa.example.com";
         const BODY: &[u8] = b"[tools]\nripgrep = \"latest\"\n";
 
-        /// An agent whose mise is a fake: it prints `plan.json` as the
-        /// plan, and only writes down an apply in `applied`. Nothing on
-        /// this machine is ever applied.
         struct Fixture {
             _root: tempfile::TempDir,
             root: PathBuf,
@@ -511,8 +451,6 @@ exit 1
             path
         }
 
-        /// A planner with the fake mise of `root`, and package managers that
-        /// do not exist: no test reaches this machine's brew or pacman.
         fn planner(state: &State, root: &Path) -> Planner {
             let mut planner = Planner::new(&state.dir, root.join("mise"));
             planner.mise_fallbacks.clear();
@@ -529,8 +467,6 @@ exit 1
                 Self::with(BODY, |_, planner| planner)
             }
 
-            /// An agent with `body` as its current config, and the planner
-            /// `setup` makes of the default one.
             fn with(body: &[u8], setup: impl FnOnce(&Path, Planner) -> Planner) -> Self {
                 let dir = tempfile::tempdir().unwrap();
                 let root = dir.path().to_owned();
@@ -577,7 +513,6 @@ exit 1
                 }
             }
 
-            /// The approval of the plan as it is now.
             fn approval(&self) -> Approval {
                 let plan = fs::read(self.root.join("plan.json")).unwrap();
                 Approval {
@@ -596,7 +531,6 @@ exit 1
                 self.key.assert(RP_ID, ORIGIN, &approval.challenge())
             }
 
-            /// Sends an approval and returns the result.
             fn send(&mut self, approval: Approval, assertion: Assertion) -> Outcome {
                 let signed = Signed {
                     approval,
@@ -644,8 +578,6 @@ exit 1
                 assert!(self.applies().is_empty(), "nothing is applied");
             }
 
-            /// The agent stops and starts again on the same state
-            /// directory, as after a crash or a reboot.
             fn restart(&mut self) {
                 let state = State::new(self.root.join("state"));
                 let planner = planner(&state, &self.root);
@@ -653,7 +585,6 @@ exit 1
                 self.worker.boot();
             }
 
-            /// The approval message the controller sends, signed.
             fn signed(&self) -> CustomMessage {
                 let approval = self.approval();
                 let signed = Signed {
@@ -667,7 +598,6 @@ exit 1
                 }
             }
 
-            /// Messages to a controller that is down.
             fn offline(&mut self, times: usize) {
                 for _ in 0..times {
                     let sent = self
@@ -677,8 +607,6 @@ exit 1
                 }
             }
 
-            /// Messages to a controller that answers `answer`, until the
-            /// outbox is empty. Returns the reports it received.
             fn online(&mut self, answer: &ServerToAgent) -> Vec<CustomMessage> {
                 let mut received = Vec::new();
                 for _ in 0..20 {
@@ -720,8 +648,6 @@ exit 1
         #[test]
         fn controller_down_at_start_plans_the_last_config_and_buffers() {
             let mut fixture = Fixture::new();
-            // The host changes while the agent is stopped, and the
-            // controller is down when it starts again.
             drifted(&fixture.root);
             fixture.restart();
             assert_eq!(fixture.plans_queued(), 1, "the boot plan of current");
@@ -729,7 +655,6 @@ exit 1
             assert_eq!(fixture.worker.outbox.len(), 1);
             assert!(fixture.applies().is_empty());
             let planned_at = at(fixture.worker.outbox.front().unwrap());
-            // Health and the config hash come from the config on disk.
             let mut message = AgentToServer::default();
             fixture.worker.fill(&mut message);
             assert_eq!(message.health.unwrap().status, "drift");
@@ -754,7 +679,6 @@ exit 1
             let mut fixture = Fixture::new();
             let signed = fixture.signed();
             assert!(fixture.online(&ServerToAgent::default()).is_empty());
-            // The controller goes down. The daily checks go on.
             fixture.offline(2);
             let later = Instant::now() + DRIFT_INTERVAL;
             fixture.worker.tick(later);
@@ -763,8 +687,6 @@ exit 1
             fixture.offline(2);
             assert_eq!(fixture.plans_queued(), 2);
             assert!(fixture.applies().is_empty());
-            // It comes back: the reports arrive in order, then the
-            // approval it sends now is the first one the agent can act on.
             let received = fixture.online(&ServerToAgent::default());
             let hashes: Vec<String> = received
                 .iter()
@@ -777,7 +699,6 @@ exit 1
             assert_ne!(hashes[0], hashes[1]);
             assert!(at(&received[0]) <= at(&received[1]));
             assert!(fixture.applies().is_empty());
-            // An approval of the old plan does not apply the drifted one.
             let answer = ServerToAgent {
                 custom_message: Some(signed),
                 ..Default::default()
@@ -794,7 +715,6 @@ exit 1
                 custom_message: Some(fixture.signed()),
                 ..Default::default()
             };
-            // The approval arrives, then the controller goes down.
             fixture
                 .worker
                 .exchange(AgentToServer::default(), |_| Ok(answer.clone()))
@@ -813,7 +733,6 @@ exit 1
                 ]
             );
             fixture.restart();
-            // The boot plan goes after what the last run left.
             let received = fixture.online(&ServerToAgent::default());
             assert_eq!(received.len(), 5);
             assert_eq!(received[..4], before[..]);
@@ -833,8 +752,6 @@ exit 1
                 .exchange(AgentToServer::default(), |_| Ok(answer.clone()))
                 .unwrap();
             assert_eq!(fixture.applies().len(), 1);
-            // The agent stops before its next message. The controller
-            // still sends the approval, since it has no result yet.
             fixture.restart();
             let received = fixture.online(&answer);
             assert_eq!(fixture.applies().len(), 1, "applied once");
@@ -849,7 +766,6 @@ exit 1
             let mut fixture = Fixture::new();
             let signed = fixture.signed();
             let approval: Signed = serde_json::from_slice(&signed.data).unwrap();
-            // What the agent wrote down before mise ran, then it stopped.
             let state = &fixture.worker.state;
             state
                 .write(
@@ -895,7 +811,6 @@ exit 1
                 applies[0].ends_with("bootstrap --yes --only packages,tools"),
                 "{applies:?}"
             );
-            // The plan before the apply and the plan after it.
             assert_eq!(fixture.plans_queued(), 2);
         }
 
@@ -954,16 +869,13 @@ exit 1
         fn a_forged_assertion_applies_nothing() {
             let mut fixture = Fixture::new();
             let approval = fixture.approval();
-            // Another key that claims the pinned credential.
             let mut forger = Authenticator::new(2);
             forger.id = fixture.key.id.clone();
             let assertion = forger.assert(RP_ID, ORIGIN, &approval.challenge());
             fixture.assert_refused(approval, assertion, "the signature does not verify");
-            // A key that is not pinned.
             let approval = fixture.approval();
             let assertion = Authenticator::new(3).assert(RP_ID, ORIGIN, &approval.challenge());
             fixture.assert_refused(approval, assertion, "not a pinned approver key");
-            // A signature by the pinned key for another relying party.
             let approval = fixture.approval();
             let assertion = fixture.key.assert(
                 "evil.example.com",
@@ -984,7 +896,6 @@ exit 1
                 signature: String::new(),
             };
             fixture.assert_refused(approval, empty, "not a pinned approver key");
-            // No key pinned: even a valid signature applies nothing.
             fixture
                 .worker
                 .state
@@ -998,7 +909,6 @@ exit 1
         #[test]
         fn an_assertion_of_another_plan_applies_nothing() {
             let mut fixture = Fixture::new();
-            // The controller swaps the plan hash after the person signed.
             let mut approval = fixture.approval();
             approval.hosts[0].plan_hash = "0".repeat(64);
             let signed_for = fixture.approval();
@@ -1006,7 +916,6 @@ exit 1
             let mut tampered = signed_for.clone();
             tampered.hosts[0].plan_hash = "0".repeat(64);
             fixture.assert_refused(tampered, assertion, "the challenge does not match");
-            // A signature that is valid, but of another plan, re-plans.
             let assertion = fixture.sign(&approval);
             let outcome = fixture.send(approval, assertion);
             assert_eq!(outcome.status, "replan");
@@ -1037,7 +946,6 @@ exit 1
             let mut fixture = Fixture::new();
             let approval = fixture.approval();
             let assertion = fixture.sign(&approval);
-            // The machine changes between the approval and the apply.
             fs::write(
                 fixture.root.join("plan.json"),
                 r#"{"packages":[{"name":"ripgrep"},{"name":"fd"}]}"#,
@@ -1048,7 +956,6 @@ exit 1
             assert_eq!(outcome.status, "replan");
             assert_eq!(outcome.plan_hash, Some(fresh.clone()));
             assert!(fixture.applies().is_empty());
-            // The fresh plan goes to the controller for a new approval.
             let report = fixture
                 .worker
                 .outbox
@@ -1058,9 +965,6 @@ exit 1
             let report: serde_json::Value = serde_json::from_slice(&report.data).unwrap();
             assert_eq!(report["plan_hash"], fresh);
         }
-        /// A Mac whose Homebrew is a fake: it lists the formulae in
-        /// `installed`, writes each command down in `brew.log`, and
-        /// installing `mise` puts the fake mise of `root` in place.
         fn mac(root: &Path, mut planner: Planner) -> Planner {
             let brew = root.join("brew");
             let script = format!(
@@ -1099,7 +1003,6 @@ exit 1
             \"brew:wget\" = \"latest\"\n\n[tools]\nripgrep = \"latest\"\n";
 
         impl Fixture {
-            /// The approval of the plan the agent makes now.
             fn approval_of_a_fresh_plan(&mut self) -> Approval {
                 let plan = self.worker.plan(CURRENT).unwrap();
                 let mut approval = self.approval();
@@ -1151,11 +1054,9 @@ exit 1
             assert_eq!(outcome.status, "applied", "{outcome:?}");
             let brew = fixture.brew_log();
             assert!(brew.contains(&"install mise wget".to_owned()), "{brew:?}");
-            // mise came from brew in the same run, and applied its items.
             assert_eq!(fixture.applies().len(), 1, "{:?}", outcome.log);
             assert!(outcome.log.contains("install mise wget"), "{}", outcome.log);
             assert!(outcome.log.contains("would apply"), "{}", outcome.log);
-            // The next plan has nothing left for brew.
             let plan = fixture.worker.plan(CURRENT).unwrap();
             assert_eq!(
                 actions(&plan)[0],

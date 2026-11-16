@@ -19,8 +19,6 @@ import { PasskeysPage } from './passkeys/PasskeysPage';
 import { SyncPage } from './sync/SyncPage';
 import { SyncRunPage } from './sync/SyncRunPage';
 
-/** Takes the place of the shell when a page's first load fails with
- *  `not_admin`, a 5xx, or no answer. Retrying loads the page again. */
 function RootError({ error, reset }: ErrorComponentProps) {
   const queryReset = useQueryErrorResetBoundary();
   return (

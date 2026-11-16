@@ -1,7 +1,6 @@
 import { Button, EmptyState, EmptyStateActions, EmptyStateDescription, EmptyStateTitle } from '@momoi-labs/kiso-react';
 import { Link } from '@tanstack/react-router';
 
-/** The page for a path the app does not have. */
 export function NotFound() {
   return (
     <EmptyState variant="informational">

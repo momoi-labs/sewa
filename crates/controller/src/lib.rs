@@ -1,6 +1,3 @@
-//! The sewa controller: hosts, their enrollment, their desired state, and
-//! what their agents report over OpAMP.
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -35,10 +32,7 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 pub struct AppState {
     pub pool: PgPool,
     pub whois: Arc<dyn WhoIs>,
-    /// The Tailscale login names that may call the API.
     pub admins: Arc<Vec<String>>,
-    /// The address agents reach the controller at, without a trailing
-    /// slash.
     pub public_url: String,
     pub agent_files: Arc<AgentFiles>,
 }
@@ -51,11 +45,9 @@ impl FromRef<AppState> for Arc<AgentFiles> {
 
 #[derive(Debug, serde::Serialize)]
 pub struct Instance {
-    /// The address of this controller, as agents reach it.
     pub address: String,
 }
 
-/// `GET /api/instance`: about this controller, for the web header.
 async fn instance(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::Json<Instance> {
@@ -64,7 +56,6 @@ async fn instance(
     })
 }
 
-/// The largest OpAMP message the controller reads.
 const OPAMP_LIMIT: usize = 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {

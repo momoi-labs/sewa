@@ -1,5 +1,3 @@
-//! The append-only history of each host.
-
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -27,7 +25,6 @@ pub const HOST_ITEMS_SET: &str = "host.items_set";
 pub const SYNC_CREATED: &str = "sync.created";
 pub const SYNC_APPROVED: &str = "sync.approved";
 
-/// Appends one event, in the caller's transaction.
 pub async fn record(
     connection: &mut PgConnection,
     host: Uuid,
@@ -43,7 +40,6 @@ pub async fn record(
     Ok(())
 }
 
-/// Appends one event about a sync or a role, which may name a host.
 pub async fn record_about(
     connection: &mut PgConnection,
     about: About,
@@ -63,8 +59,6 @@ pub async fn record_about(
     Ok(())
 }
 
-/// Appends one event that happened at `at` rather than now, such as a
-/// report the agent kept while it could not reach the controller.
 pub async fn record_at(
     connection: &mut PgConnection,
     about: About,
@@ -87,7 +81,6 @@ pub async fn record_at(
     Ok(())
 }
 
-/// What an event is about.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct About {
     pub host: Option<Uuid>,

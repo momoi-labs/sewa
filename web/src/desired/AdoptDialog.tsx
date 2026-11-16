@@ -23,18 +23,14 @@ import { type FormEvent, useState } from 'react';
 import { adoptPackage, type Host, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 
-/** The Select value for this host's adjustments. Role ids are UUIDs. */
 const HOST = 'host';
 
 type Props = {
   host: Host;
-  /** The undeclared package to adopt, or null when the dialog is closed. */
   pkg: string | null;
   onClose: () => void;
 };
 
-/** Adds an undeclared package to a role or to the host's adjustments. The
- *  hosts get it at their next sync. */
 export function AdoptDialog({ host, pkg, onClose }: Props) {
   return (
     <Dialog open={pkg !== null} onOpenChange={(open) => !open && onClose()}>

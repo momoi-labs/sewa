@@ -22,8 +22,6 @@ import type { Plan, PlanResource } from '../api';
 import { Unknown } from '../components/Unknown';
 import { formatDateTime, formatReceived } from '../format';
 
-/** The label of each plan action. A removal is drawn as a danger, since it
- *  takes something off the host. */
 function ActionBadge({ action }: { action: string }) {
   switch (action) {
     case 'create':
@@ -62,14 +60,12 @@ const ORDER: Record<string, number> = {
   noop: 4,
 };
 
-/** Removals first, so they are not missed. */
 function sorted(resources: PlanResource[]): PlanResource[] {
   return [...resources].sort(
     (a, b) => (ORDER[a.action] ?? 3) - (ORDER[b.action] ?? 3) || a.id.name.localeCompare(b.id.name),
   );
 }
 
-/** One sentence for the plan's counts, such as "1 to install, 1 to remove". */
 export function summarize(resources: PlanResource[]): string {
   const count = (action: string) => resources.filter((resource) => resource.action === action).length;
   const parts = [
@@ -83,8 +79,6 @@ export function summarize(resources: PlanResource[]): string {
   return text.length ? text.join(', ') : 'Nothing to do';
 }
 
-/** A mise bootstrap plan as a table: each item, what the host has, what the
- *  config wants, and the action. The agent applies it only once signed. */
 export function PlanView({ plan, waiting }: { plan: Plan | null; waiting: string }) {
   if (!plan) {
     return (

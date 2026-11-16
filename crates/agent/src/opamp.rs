@@ -1,18 +1,9 @@
-//! The OpAMP client: the agent reports who it is to the controller over the
-//! specification's plain HTTP transport, which polls instead of holding a
-//! WebSocket. Adapted from pg-yard's `crates/agent/src/opamp.rs`. The
-//! controller sends mise configs as remote config; the agent sends their
-//! plans back as `io.sewa.plan` custom messages. Approvals come as
-//! `io.sewa.approval` custom messages, and apply results go back on the
-//! same capability.
-
 use std::fmt;
 use std::time::Duration;
 
 use prost::Message;
 use uuid::Uuid;
 
-/// The messages of the OpAMP specification, generated from `proto/opamp`.
 #[allow(clippy::all, clippy::pedantic)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/opamp.proto.v1.rs"));
@@ -23,31 +14,22 @@ use proto::{
     any_value,
 };
 
-/// The version the agent reports.
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The `service.name` the agent reports.
 pub const SERVICE_NAME: &str = "sewa-agent";
 
-/// The custom capability of plan reports, and its one message type.
 pub const PLAN_CAPABILITY: &str = "io.sewa.plan";
 pub const PLAN_TYPE: &str = "plan";
 
-/// The specification's default polling interval.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
-/// The largest response body the client reads.
 const RESPONSE_LIMIT: u64 = 1024 * 1024;
 
-/// Where the agent runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Host {
     pub hostname: String,
-    /// `os.type` as the OpenTelemetry semantic conventions name it.
     pub os: &'static str,
-    /// `host.arch` as the OpenTelemetry semantic conventions name it.
     pub arch: &'static str,
-    /// The user the agent runs as.
     pub user: String,
 }
 
@@ -77,8 +59,6 @@ impl Host {
     }
 }
 
-/// The agent description: the identifying attributes name this agent, the
-/// others describe where it runs.
 pub fn describe(instance_uid: Uuid, host: &Host) -> AgentDescription {
     AgentDescription {
         identifying_attributes: vec![
@@ -104,8 +84,6 @@ fn attribute(key: &str, value: &str) -> KeyValue {
     }
 }
 
-/// One status report. Each carries the full description, so a controller
-/// that lost its copy needs nothing more.
 pub fn message(instance_uid: Uuid, sequence_num: u64, host: &Host) -> AgentToServer {
     AgentToServer {
         instance_uid: instance_uid.as_bytes().to_vec(),
@@ -125,14 +103,11 @@ pub fn message(instance_uid: Uuid, sequence_num: u64, host: &Host) -> AgentToSer
     }
 }
 
-/// Why an exchange failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExchangeError {
-    /// A network failure or a missed deadline.
     Network,
     Unauthorized,
     Status(u16),
-    /// The response was too large or did not decode.
     Response,
 }
 
@@ -149,8 +124,6 @@ impl fmt::Display for ExchangeError {
     }
 }
 
-/// One blocking HTTP client with short deadlines, no proxy, and no
-/// redirects.
 pub fn http_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(5)))
@@ -163,7 +136,6 @@ pub fn http_agent() -> ureq::Agent {
         .into()
 }
 
-/// Sends one message to `url` and returns the answer.
 pub fn exchange(
     agent: &ureq::Agent,
     url: &str,

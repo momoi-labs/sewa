@@ -18,12 +18,10 @@ import { type FormEvent, useState } from 'react';
 import { ApiFailure, createRole, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 
-/** A name the controller takes: 1 to 63 letters, digits, `-`, `_` or `.`. */
 const NAME = /^[A-Za-z0-9._-]{1,63}$/;
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void };
 
-/** Creates an empty role, then opens it. */
 export function AddRoleDialog({ open, onOpenChange }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

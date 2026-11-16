@@ -1,11 +1,3 @@
-//! What a person can do about a host's drift, under
-//! `/api/hosts/{id}/drift`. Each action records an event.
-//!
-//! - Adopt adds an undeclared package to a role or to the host's
-//!   adjustments. A sync of the host reverts the rest of its drift.
-//! - Ignore hides the drift and the undeclared packages of now, until the
-//!   drift changes or another package shows up.
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
@@ -24,7 +16,6 @@ fn host_id(id: &str) -> ApiResult<Uuid> {
         .map_err(|_| Failure::new(StatusCode::NOT_FOUND, "not_found"))
 }
 
-/// Locks the host, or fails with 404 `not_found`.
 async fn lock(connection: &mut PgConnection, host: Uuid) -> ApiResult<()> {
     let found: Option<Uuid> = sqlx::query_scalar("SELECT id FROM hosts WHERE id = $1 FOR UPDATE")
         .bind(host)
@@ -37,18 +28,10 @@ async fn lock(connection: &mut PgConnection, host: Uuid) -> ApiResult<()> {
 
 #[derive(Debug, Deserialize)]
 pub struct Adopt {
-    /// The package, as the package manager names it.
     pub package: String,
-    /// The role to add it to, or null for this host's adjustments.
     pub role: Option<Uuid>,
 }
 
-/// `POST /api/hosts/{id}/drift/adopt`: adds an undeclared package, at
-/// version `latest`, to a role or to the host's adjustments. A package the
-/// role already has keeps its version. 400 `invalid_item` or
-/// `unknown_role`; 409 `builtin_role` for the built-in role. Records
-/// `drift.adopted` and returns 204. The host gets the package at its next
-/// sync.
 pub async fn adopt(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -106,8 +89,6 @@ pub async fn adopt(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/hosts/{id}/drift/ignore`: hides the host's drift and its
-/// undeclared packages as they are now. Records `drift.ignored`.
 pub async fn ignore(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,

@@ -1,15 +1,3 @@
-//! What an approval signs, and how an agent or the controller checks the
-//! passkey assertion that signs it.
-//!
-//! An approval names a change and, for each host it covers, the agent
-//! instance, the hash of the config, and the hash of the plan the person
-//! read. Its WebAuthn challenge is the SHA-256 of [`Approval::signed_text`].
-//! The agent checks the assertion against the approver keys pinned at
-//! install, so the controller cannot make it apply anything without a
-//! signature from one of those keys.
-//!
-//! Only ES256 (ECDSA on P-256 with SHA-256) keys are supported.
-
 use std::fmt;
 
 use base64::Engine;
@@ -21,36 +9,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// The custom capability that carries approvals to the agent and apply
-/// results back.
 pub const CAPABILITY: &str = "io.sewa.approval";
-/// The custom message type of an approval, from the controller.
 pub const APPROVAL_TYPE: &str = "approval";
-/// The custom message type of an apply result, from the agent.
 pub const RESULT_TYPE: &str = "result";
 
-/// The COSE algorithm number of ES256.
 pub const ES256: i64 = -7;
 
-/// The first line of every signed text, so a signature never means
-/// anything else.
 const HEADER: &str = "sewa approval v1";
 
-/// One host an approval covers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostPlan {
     pub host_id: Uuid,
-    /// The agent instance that planned it. An agent finds its own entry by
-    /// its instance UID, which only it chooses.
     pub instance_uid: Uuid,
-    /// The hex SHA-256 of the config the host applies.
     pub config_hash: String,
-    /// The hex SHA-256 of the plan the person approved.
     pub plan_hash: String,
 }
 
-/// What a person approves: one change, and the plan of each host. Its id
-/// is signed, so an agent answers each signature once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Approval {
     pub approval_id: Uuid,
@@ -59,8 +33,6 @@ pub struct Approval {
 }
 
 impl Approval {
-    /// The text the challenge hashes: a header, the approval, the change,
-    /// then one line per host in host id order.
     pub fn signed_text(&self) -> String {
         let mut hosts: Vec<&HostPlan> = self.hosts.iter().collect();
         hosts.sort_by_key(|host| host.host_id);
@@ -77,12 +49,10 @@ impl Approval {
         text
     }
 
-    /// The WebAuthn challenge of this approval.
     pub fn challenge(&self) -> [u8; 32] {
         Sha256::digest(self.signed_text().as_bytes()).into()
     }
 
-    /// The entry of an agent instance.
     pub fn host(&self, instance_uid: Uuid) -> Option<&HostPlan> {
         self.hosts
             .iter()
@@ -90,8 +60,6 @@ impl Approval {
     }
 }
 
-/// A WebAuthn assertion, each field in unpadded base64url as the browser's
-/// bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assertion {
     pub credential_id: String,
@@ -100,8 +68,6 @@ pub struct Assertion {
     pub signature: String,
 }
 
-/// An approval and the assertion that signs it, as the controller sends it
-/// to an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signed {
     #[serde(flatten)]
@@ -109,61 +75,41 @@ pub struct Signed {
     pub assertion: Assertion,
 }
 
-/// What an agent did with an approval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub approval_id: Uuid,
     pub change_id: Uuid,
-    /// `applied`, `failed`, or `replan`.
     pub status: String,
-    /// The hash of the plan the agent found before applying.
     pub plan_hash: Option<String>,
-    /// mise's output, or why the agent refused.
     pub log: String,
-    /// When the agent finished with the approval, in Unix milliseconds by
-    /// its clock. A result the agent buffered while the controller was
-    /// down arrives later than this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<i64>,
 }
 
-/// One approver key, as the agent pins it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Approver {
-    /// The credential id, unpadded base64url.
     pub id: String,
-    /// The public key as SubjectPublicKeyInfo DER, unpadded base64url.
     pub public_key: String,
-    /// Who registered it.
     pub login: String,
 }
 
-/// The approver keys an agent trusts, and where the passkeys belong.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pinned {
-    /// The WebAuthn relying party id: the controller's host name.
     pub rp_id: String,
-    /// The web app's origin, such as `https://sewa.example.com`.
     pub origin: String,
     pub keys: Vec<Approver>,
 }
 
-/// Why an assertion was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rejection {
-    /// No approver key is pinned.
     NoKeys,
-    /// The credential is not one of the pinned keys.
     UnknownKey,
-    /// A field does not decode.
     Malformed,
     WrongType,
     WrongChallenge,
     WrongOrigin,
     WrongRpId,
-    /// The authenticator did not see a person.
     NotPresent,
-    /// The authenticator did not verify the person.
     NotVerified,
     BadSignature,
 }
@@ -195,13 +141,10 @@ pub fn decode(text: &str) -> Result<Vec<u8>, Rejection> {
         .map_err(|_| Rejection::Malformed)
 }
 
-/// Reads an ES256 public key from unpadded base64url SPKI DER.
 pub fn public_key(text: &str) -> Result<VerifyingKey, Rejection> {
     VerifyingKey::from_public_key_der(&decode(text)?).map_err(|_| Rejection::Malformed)
 }
 
-/// Checks the client data of a ceremony: its type (`webauthn.create` or
-/// `webauthn.get`), its challenge, and its origin.
 pub fn check_client_data(
     client_data_json: &[u8],
     kind: &str,
@@ -231,10 +174,6 @@ pub fn check_client_data(
     Ok(())
 }
 
-/// Checks an assertion of `challenge` against the pinned keys: the key, the
-/// client data, the relying party, that the user was present and verified,
-/// and the signature over the authenticator data and the client data hash.
-/// Returns the approver that signed.
 pub fn verify<'a>(
     pinned: &'a Pinned,
     assertion: &Assertion,
@@ -275,7 +214,6 @@ pub fn verify<'a>(
     Ok(approver)
 }
 
-/// A software authenticator, for tests on both sides.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
     use p256::ecdsa::signature::Signer;
@@ -291,7 +229,6 @@ pub mod testing {
     }
 
     impl Authenticator {
-        /// An authenticator whose private key is `seed` repeated.
         pub fn new(seed: u8) -> Self {
             Self {
                 id: vec![seed; 16],
@@ -316,7 +253,6 @@ pub mod testing {
             }
         }
 
-        /// The client data JSON of a ceremony.
         pub fn client_data(kind: &str, challenge: &[u8], origin: &str) -> Vec<u8> {
             serde_json::json!({
                 "type": kind,
@@ -328,8 +264,6 @@ pub mod testing {
             .into_bytes()
         }
 
-        /// Signs `challenge` for `rp_id` and `origin`, with the user present
-        /// and verified.
         pub fn assert(&self, rp_id: &str, origin: &str, challenge: &[u8]) -> Assertion {
             let client_data = Self::client_data("webauthn.get", challenge, origin);
             let mut authenticator_data = Sha256::digest(rp_id.as_bytes()).to_vec();
@@ -423,7 +357,6 @@ mod tests {
             verify(&pinned, &other, &challenge),
             Err(Rejection::UnknownKey)
         );
-        // Another key under a pinned credential id: a forgery.
         let forged = Assertion {
             credential_id: good.credential_id.clone(),
             ..other
@@ -446,7 +379,6 @@ mod tests {
             verify(&pinned, &wrong_origin, &challenge),
             Err(Rejection::WrongOrigin)
         );
-        // Client data swapped after signing.
         let swapped = Assertion {
             client_data_json: encode(&Authenticator::client_data(
                 "webauthn.get",

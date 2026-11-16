@@ -1,11 +1,3 @@
-//! The desired state and the mise bootstrap config each host gets from it.
-//!
-//! A host's items are the items of the built-in role, then of its roles,
-//! with its adjustments on top, keeping only the items for its OS. Every
-//! edit writes the `role_items`, `host_roles`, and `host_adjustments`
-//! tables directly. Hosts get the new state when an admin syncs them
-//! (`syncs.rs`).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -13,13 +5,8 @@ use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-/// The name of the built-in role: what sewa itself needs on a host. It
-/// applies to every host and cannot be deleted or renamed. The controller
-/// gives the role this name at start, so renaming it takes only this line.
 pub const BOOTSTRAP_ROLE: &str = "bootstrap";
 
-/// What an item installs: a system package through mise bootstrap, or a
-/// mise tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -44,16 +31,12 @@ impl Kind {
     }
 }
 
-/// An item's key: its kind and name.
 pub type Key = (Kind, String);
 
-/// The package version that means "must not be installed".
 pub const ABSENT: &str = "absent";
 
-/// The OSes a host runs, as `hosts.os` names them.
 pub const OSES: [&str; 2] = ["linux", "macos"];
 
-/// An item's version, and the one OS it is for, if only one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub version: String,
@@ -73,9 +56,6 @@ impl Spec {
     }
 }
 
-/// Reads a version from JSON. Any case of `latest`, with or without
-/// surrounding spaces, becomes `latest`: the agent only knows that spelling.
-/// Every version a client sends (role items, host edits) passes through here.
 fn version_from_json<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
@@ -93,15 +73,11 @@ pub struct Item {
     pub name: String,
     #[serde(deserialize_with = "version_from_json")]
     pub version: String,
-    /// `linux` or `macos` for an item of one OS only, or null for every OS.
     #[serde(default)]
     pub os: Option<String>,
 }
 
 impl Item {
-    /// Whether the name, version, and OS are well formed: name and version
-    /// not empty, at most 200 characters, no control characters, `absent`
-    /// only for packages, and a known OS.
     pub fn is_valid(&self) -> bool {
         valid_text(&self.name)
             && valid_text(&self.version)
@@ -117,18 +93,13 @@ fn valid_text(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// What a host changes on top of its roles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Adjustment {
-    /// Adds the item, or sets its version, for this host.
     Set { version: String },
-    /// Drops an item that a role declares.
     Remove,
 }
 
-/// One edit of a host, written at once. Roles change as a whole instead
-/// (`PUT /api/roles/{id}`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Edit {
@@ -138,19 +109,16 @@ pub enum Edit {
     HostRoleRemove {
         role: Uuid,
     },
-    /// Adds an item to one host, or changes its version there.
     HostItemSet {
         kind: Kind,
         name: String,
         #[serde(deserialize_with = "version_from_json")]
         version: String,
     },
-    /// Drops an item that the host's roles declare, on this host only.
     HostItemRemove {
         kind: Kind,
         name: String,
     },
-    /// Drops the host's adjustment of an item, so its roles decide again.
     HostItemReset {
         kind: Kind,
         name: String,
@@ -158,7 +126,6 @@ pub enum Edit {
 }
 
 impl Edit {
-    /// Whether names and versions are well formed, as [`Item::is_valid`].
     pub fn is_valid(&self) -> bool {
         match self {
             Self::HostItemSet {
@@ -180,21 +147,17 @@ impl Edit {
     }
 }
 
-/// The whole desired state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     pub role_names: BTreeMap<Uuid, String>,
-    /// The built-in role, which every host has.
     pub builtin: Option<Uuid>,
     pub role_items: BTreeMap<Uuid, BTreeMap<Key, Spec>>,
     pub host_roles: BTreeMap<Uuid, BTreeSet<Uuid>>,
     pub adjustments: BTreeMap<Uuid, BTreeMap<Key, Adjustment>>,
-    /// Each host's OS: `linux` or `macos`.
     pub host_os: BTreeMap<Uuid, String>,
 }
 
 impl State {
-    /// Reads the desired state.
     pub async fn load(connection: &mut PgConnection) -> sqlx::Result<Self> {
         let mut state = Self::default();
         let roles: Vec<(Uuid, String, bool)> =
@@ -253,7 +216,6 @@ impl State {
         Ok(state)
     }
 
-    /// The roles a host was given, by name, without the built-in role.
     pub fn roles_of(&self, host: Uuid) -> Vec<(Uuid, String)> {
         let mut roles: Vec<(Uuid, String)> = self
             .host_roles
@@ -267,11 +229,6 @@ impl State {
         roles
     }
 
-    /// The items of a host for its OS: the built-in role's items, then
-    /// the items of its roles, then its adjustments. When two roles declare
-    /// the same item with different versions, the role whose name sorts
-    /// last wins. A package of the built-in role without a manager prefix
-    /// gets the OS's default manager (see [`bootstrap_key`]).
     pub fn host_items(&self, host: Uuid) -> BTreeMap<Key, String> {
         let os = self.host_os.get(&host).map(String::as_str);
         let mut items = BTreeMap::new();
@@ -308,10 +265,6 @@ impl State {
     }
 }
 
-/// The key a package of the built-in role installs as: a name without a
-/// manager prefix gets the default manager of the host's OS, `brew` on
-/// macOS and `pacman` on Linux. The agent installs these itself, before
-/// anything mise installs.
 pub fn bootstrap_key(kind: Kind, name: &str, os: Option<&str>) -> String {
     match (kind, name.contains(':'), os) {
         (Kind::Package, false, Some("macos")) => format!("brew:{name}"),
@@ -320,8 +273,6 @@ pub fn bootstrap_key(kind: Kind, name: &str, os: Option<&str>) -> String {
     }
 }
 
-/// Gives the built-in role its name from [`BOOTSTRAP_ROLE`], and creates it
-/// with `mise` if it is missing. Runs at start.
 pub async fn ensure_bootstrap(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     let mut transaction = pool.begin().await?;
     let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM roles WHERE builtin FOR UPDATE")
@@ -356,7 +307,6 @@ pub async fn ensure_bootstrap(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     transaction.commit().await
 }
 
-/// A TOML basic string.
 fn quote(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
@@ -375,8 +325,6 @@ fn quote(text: &str) -> String {
     quoted
 }
 
-/// The mise bootstrap config of a set of items: packages under
-/// `[bootstrap.packages]`, tools under `[tools]`.
 pub fn render(items: &BTreeMap<Key, String>) -> String {
     let mut body = String::from("# Rendered by the sewa controller. Do not edit.\n");
     let section = |kind: Kind| {
@@ -406,7 +354,6 @@ pub fn render(items: &BTreeMap<Key, String>) -> String {
     body
 }
 
-/// The hex SHA-256 of a config body, as the agent computes it.
 pub fn hash(body: &str) -> String {
     hex(&Sha256::digest(body.as_bytes()))
 }
@@ -415,13 +362,8 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The name of the one config each host gets: its desired state.
 pub const CURRENT: &str = "current";
 
-/// The packages of a set of items that count as declared for a package
-/// manager: present packages, without a manager prefix, whose prefix is
-/// none or this manager. `aur` packages count for `pacman`, which lists
-/// them as installed.
 pub fn declared_packages(items: &BTreeMap<Key, String>, manager: &str) -> BTreeSet<String> {
     items
         .iter()
@@ -438,7 +380,6 @@ pub fn declared_packages(items: &BTreeMap<Key, String>, manager: &str) -> BTreeS
         .collect()
 }
 
-/// Writes one edit of a host.
 pub async fn save(connection: &mut PgConnection, host: Uuid, edit: &Edit) -> sqlx::Result<()> {
     let query = match edit {
         Edit::HostRoleAdd { role } => sqlx::query(
@@ -483,12 +424,10 @@ pub async fn save(connection: &mut PgConnection, host: Uuid, edit: &Edit) -> sql
     Ok(())
 }
 
-/// The config a host gets: the render of its items.
 pub fn host_config(host: Uuid, state: &State) -> String {
     render(&state.host_items(host))
 }
 
-/// The hash of a whole set of configs, for OpAMP's `config_hash`.
 pub fn configs_hash(configs: &BTreeMap<String, String>) -> Vec<u8> {
     let mut digest = Sha256::new();
     for (name, body) in configs {
@@ -515,8 +454,6 @@ mod tests {
         }
     }
 
-    /// A state with the built-in role (`mise`), `base`, and `dev`, and
-    /// one host of `os` with both roles.
     fn state(os: &str) -> (State, Uuid) {
         let (bootstrap, base, dev, host) = (
             Uuid::new_v4(),
@@ -599,7 +536,6 @@ mod tests {
              \n[tools]\n\
              \"node\" = \"24\"\n"
         );
-        // The built-in role is not one of the roles the host was given.
         assert_eq!(
             state
                 .roles_of(host)

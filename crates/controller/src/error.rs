@@ -1,5 +1,3 @@
-//! The error answer of the JSON API: a status and `{"error": "<code>"}`.
-
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

@@ -1,7 +1,3 @@
-//! The JSON API for people, under `/api`: create a host, list the hosts,
-//! and read one host, its desired state, and its events.
-//! Only the Tailscale users in the admin list may call it (`require_admin`).
-
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, Request, State};
@@ -19,12 +15,8 @@ use crate::status::{Status, status};
 use crate::whois::Identity;
 use crate::{AppState, desired, events, install, roles, secret, syncs};
 
-/// How long an install token stays valid.
 pub const TOKEN_LIFETIME: Duration = Duration::hours(1);
 
-/// The Tailscale identity of the peer, from tailscaled. A request from an
-/// address that is not a tailnet node gets 403 `not_tailnet`, and one that
-/// tailscaled cannot answer 503 `whois_unavailable`.
 pub fn identify<'a>(
     state: &'a AppState,
     request: &Request,
@@ -57,8 +49,6 @@ async fn identify_peer(
     }
 }
 
-/// Lets a request through only when its Tailscale user is in the admin
-/// list. Others get 403 `not_admin`.
 pub async fn require_admin(
     State(state): State<AppState>,
     mut request: Request,
@@ -92,27 +82,22 @@ pub struct Agent {
 pub struct Host {
     pub id: Uuid,
     pub name: String,
-    /// `linux` or `macos`, as the agent reports it; null until it does.
     pub os: Option<String>,
     pub status: Status,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
     pub enrolled_at: Option<DateTime<Utc>>,
     pub last_seen_at: Option<DateTime<Utc>>,
-    /// What the agent last described; null until it sends a description.
     pub agent: Option<Agent>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Created {
     pub host: Host,
-    /// The one-line command that installs the agent and enrolls the host.
-    /// It holds the install token, which the controller does not keep.
     pub install_command: String,
     pub token_expires_at: DateTime<Utc>,
 }
 
-/// A name of 1 to 63 letters, digits, `-`, `_`, or `.`.
 pub fn valid_name(name: &str) -> bool {
     (1..=63).contains(&name.len())
         && name
@@ -138,8 +123,6 @@ async fn issue_token(
     Ok((token, expires_at))
 }
 
-/// `POST /api/hosts`: stores a host as waiting and returns its install
-/// command with a fresh single-use token.
 pub async fn create(
     State(state): State<AppState>,
     Json(new): Json<NewHost>,
@@ -201,7 +184,6 @@ type Row = (
     Option<String>,
 );
 
-/// A query of [`Row`]s: `SELECT <its columns> FROM hosts` and the rest.
 macro_rules! select_hosts {
     ($rest:literal) => {
         concat!(
@@ -248,7 +230,6 @@ fn host(row: Row, now: DateTime<Utc>) -> Host {
     }
 }
 
-/// A host in the list, with the roles it has besides the built-in one.
 #[derive(Debug, Serialize)]
 pub struct Listed {
     #[serde(flatten)]
@@ -256,8 +237,6 @@ pub struct Listed {
     pub roles: Vec<roles::Named>,
 }
 
-/// `GET /api/hosts`: every host by name, with its status and its roles.
-/// The built-in role is left out: every host has it.
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Listed>>> {
     let rows: Vec<Row> = sqlx::query_as(select_hosts!("ORDER BY name"))
         .fetch_all(&state.pool)
@@ -290,13 +269,11 @@ pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Listed>>>
     ))
 }
 
-/// The host id of a path. One that is not a UUID names no host.
 fn host_id(id: &str) -> ApiResult<Uuid> {
     id.parse()
         .map_err(|_| Failure::new(StatusCode::NOT_FOUND, "not_found"))
 }
 
-/// `GET /api/hosts/{id}`: one host, or 404 `not_found`.
 pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<Host>> {
     let id = host_id(&id)?;
     let row: Option<Row> = sqlx::query_as(select_hosts!("WHERE id = $1"))
@@ -483,11 +460,8 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
-/// How many events `GET /api/hosts/{id}/events` returns.
 const EVENT_LIMIT: i64 = 100;
 
-/// `GET /api/hosts/{id}/events`: the host's latest events, newest first,
-/// or 404 `not_found`.
 pub async fn events(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -524,9 +498,7 @@ pub struct Adjustment {
 
 #[derive(Debug, Serialize)]
 pub struct Drift {
-    /// `in_sync` (exit code 0), `drift` (2), or `error` (1 or another).
     pub status: &'static str,
-    /// Ignore hid this drift. It shows again when the drift changes.
     pub ignored: bool,
     #[serde(flatten)]
     pub plan: syncs::Plan,
@@ -535,10 +507,7 @@ pub struct Drift {
 #[derive(Debug, Serialize)]
 pub struct Undeclared {
     pub manager: String,
-    /// The explicitly installed packages that the host's approved items do
-    /// not declare, by name.
     pub packages: Vec<String>,
-    /// Undeclared packages that Ignore hid, left out of `packages`.
     pub ignored_count: usize,
     pub explicit_count: usize,
     pub reported_at: DateTime<Utc>,
@@ -546,18 +515,11 @@ pub struct Undeclared {
 
 #[derive(Debug, Serialize)]
 pub struct HostState {
-    /// The roles an admin gave the host. Every host also gets the built-in
-    /// role, which is not in this list.
     pub roles: Vec<roles::Named>,
     pub adjustments: Vec<Adjustment>,
-    /// The host's items: the built-in role's, its roles' for its OS, and
-    /// its adjustments.
     pub items: Vec<desired::Item>,
-    /// The config the host gets for them.
     pub config: String,
-    /// The health status the agent last reported.
     pub health: Option<String>,
-    /// The last plan of the desired state, or null before the first.
     pub drift: Option<Drift>,
     pub undeclared: Option<Undeclared>,
 }
@@ -584,8 +546,6 @@ fn adjustments(state: &desired::State, host: Uuid) -> Vec<Adjustment> {
         .collect()
 }
 
-/// `GET /api/hosts/{id}/state`: the host's roles, adjustments, items,
-/// drift, and undeclared packages, or 404 `not_found`.
 pub async fn state(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -675,14 +635,8 @@ pub struct Edits {
     pub edits: Vec<desired::Edit>,
 }
 
-/// The most edits one call takes.
 const EDIT_LIMIT: usize = 500;
 
-/// `POST /api/hosts/{id}/edits`: changes the host's roles and adjustments
-/// at once, and returns its state. 400 `invalid_edit`, `too_many_edits`,
-/// or `unknown_role` (the built-in role counts as unknown: every host has
-/// it). Records `host.roles_set` and `host.items_set`. Hosts get the
-/// change at their next sync.
 pub async fn edit(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,

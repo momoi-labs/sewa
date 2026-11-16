@@ -27,8 +27,6 @@ import { AddPasskeyDialog } from './AddPasskeyDialog';
 
 const COLUMNS = 3;
 
-/** Every admin's passkeys. Each one can sign syncs, on the hosts whose
- *  install pinned it. */
 export function PasskeysPage() {
   const passkeys = useQuery(passkeysQuery);
   const [adding, setAdding] = useState(false);

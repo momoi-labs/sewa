@@ -1,10 +1,3 @@
-//! `/api/passkeys`: the admins' passkeys, which sign approvals. The
-//! browser creates each one with WebAuthn; the controller keeps its
-//! public key. The install script pins every passkey into the agent.
-//!
-//! The relying party is the controller's public URL: its host is the
-//! relying party id and its origin is the web app's origin.
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
@@ -20,11 +13,8 @@ use crate::error::{ApiResult, Failure};
 use crate::events::{self, About};
 use crate::whois::Identity;
 
-/// How long a registration challenge stays valid, in seconds.
 const CHALLENGE_LIFETIME: i64 = 300;
 
-/// The relying party id and the origin of a public URL such as
-/// `https://sewa.example.com:8443`: `sewa.example.com` and the URL itself.
 pub fn relying_party(public_url: &str) -> (String, String) {
     let authority = public_url
         .split_once("://")
@@ -42,7 +32,6 @@ pub struct Passkey {
     pub id: Uuid,
     pub login: String,
     pub name: String,
-    /// Unpadded base64url.
     pub credential_id: String,
     pub created_at: DateTime<Utc>,
 }
@@ -60,8 +49,6 @@ fn passkey(row: PasskeyRow) -> Passkey {
     }
 }
 
-/// `GET /api/passkeys`: every admin's passkeys, oldest first. They are all
-/// approver keys.
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Passkey>>> {
     let rows: Vec<PasskeyRow> = sqlx::query_as(
         "SELECT id, login, name, credential_id, created_at FROM passkeys ORDER BY created_at, id",
@@ -71,12 +58,10 @@ pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Passkey>>
     Ok(Json(rows.into_iter().map(passkey).collect()))
 }
 
-/// The keys an agent trusts: every passkey, with the relying party.
 pub async fn pinned(connection: &mut PgConnection, public_url: &str) -> sqlx::Result<Pinned> {
     keys(connection, public_url, None).await
 }
 
-/// The passkeys of one login, or of everyone, as approver keys.
 pub async fn keys(
     connection: &mut PgConnection,
     public_url: &str,
@@ -113,26 +98,19 @@ pub struct RelyingParty {
 
 #[derive(Debug, Serialize)]
 pub struct User {
-    /// Unpadded base64url: the first 16 bytes of the login's SHA-256.
     pub id: String,
     pub name: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Options {
-    /// Unpadded base64url.
     pub challenge: String,
     pub rp: RelyingParty,
     pub user: User,
-    /// The COSE algorithm the controller accepts: ES256.
     pub algorithm: i64,
-    /// The signed-in user's credential ids, so the browser does not
-    /// register the same authenticator twice.
     pub exclude_credentials: Vec<String>,
 }
 
-/// `POST /api/passkeys/options`: a fresh challenge for registering a
-/// passkey, valid for five minutes.
 pub async fn options(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -169,16 +147,12 @@ pub async fn options(
     }))
 }
 
-/// A new passkey, as the browser created it. Bytes are unpadded base64url.
 #[derive(Debug, Deserialize)]
 pub struct Registration {
     pub name: String,
     pub credential_id: String,
-    /// `getPublicKey()`: SubjectPublicKeyInfo DER.
     pub public_key: String,
-    /// `getPublicKeyAlgorithm()`.
     pub algorithm: i64,
-    /// `getAuthenticatorData()`.
     pub authenticator_data: String,
     pub client_data_json: String,
 }
@@ -187,10 +161,6 @@ fn invalid() -> Failure {
     Failure::new(StatusCode::BAD_REQUEST, "invalid_passkey")
 }
 
-/// `POST /api/passkeys`: keeps a new passkey. Its client data must carry a
-/// challenge from `options` for the same user, and the origin; its
-/// authenticator data the relying party and a present user. Only ES256
-/// keys are accepted.
 pub async fn register(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,

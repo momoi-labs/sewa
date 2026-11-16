@@ -1,13 +1,3 @@
-//! What the agent keeps on disk: the controller's address, the credential,
-//! the instance UID, and the approver keys pinned at install, in one
-//! private directory. The worker keeps its last config, the approvals it
-//! answered, and its outbox there too, so it works on without the
-//! controller.
-//!
-//! - Linux: `/var/lib/sewa`, as root.
-//! - macOS: `~/Library/Application Support/sewa` of the user the agent
-//!   runs as.
-
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -16,11 +6,8 @@ use std::path::{Path, PathBuf};
 use sewa_approval::Pinned;
 use uuid::Uuid;
 
-/// The directory of this system, for the user the agent runs as.
 pub fn default_dir() -> io::Result<PathBuf> {
     if cfg!(target_os = "macos") {
-        // The home of the running user, not $HOME: launchd and sudo do not
-        // always set it.
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())
             .map_err(io::Error::from)?
             .ok_or_else(|| io::Error::other("the running user has no account"))?;
@@ -44,7 +31,6 @@ impl State {
         Self { dir }
     }
 
-    /// Stores what enrollment returned, replacing an earlier enrollment.
     pub fn store_enrollment(&self, server: &str, credential: &str) -> io::Result<()> {
         DirBuilder::new()
             .recursive(true)
@@ -57,7 +43,6 @@ impl State {
         )
     }
 
-    /// The controller's address and the credential.
     pub fn enrollment(&self) -> io::Result<(String, String)> {
         let read = |name: &str| -> io::Result<String> {
             let path = self.dir.join(name);
@@ -69,8 +54,6 @@ impl State {
         Ok((read(SERVER)?, read(CREDENTIAL)?))
     }
 
-    /// Pins the approver keys, replacing the keys pinned before. Only the
-    /// install does this; nothing the controller sends changes them.
     pub fn store_approvers(&self, pinned: &Pinned) -> io::Result<()> {
         DirBuilder::new()
             .recursive(true)
@@ -80,8 +63,6 @@ impl State {
         write_private(&self.dir.join(APPROVERS), &json)
     }
 
-    /// The pinned approver keys. None pinned, or a file that does not
-    /// read, means no key: the agent applies nothing.
     pub fn approvers(&self) -> Pinned {
         fs::read(self.dir.join(APPROVERS))
             .ok()
@@ -89,13 +70,10 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// A file the agent keeps for itself, such as the last config, or None
-    /// when it does not read.
     pub fn read(&self, name: &str) -> Option<Vec<u8>> {
         fs::read(self.dir.join(name)).ok()
     }
 
-    /// Writes a file the agent keeps for itself, mode 0600.
     pub fn write(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         DirBuilder::new()
             .recursive(true)
@@ -108,9 +86,6 @@ impl State {
         let _ = fs::remove_file(self.dir.join(name));
     }
 
-    /// Reads the instance UID, or creates a UUIDv7 and keeps it, so the
-    /// agent keeps its identity across restarts. From pg-yard's
-    /// `crates/agent/src/opamp.rs`.
     pub fn instance_uid(&self) -> io::Result<Uuid> {
         let path = self.dir.join(INSTANCE_UID);
         match fs::read_to_string(&path) {
@@ -128,8 +103,6 @@ impl State {
     }
 }
 
-/// Writes a file, mode 0600, through a temporary file, so a crash never
-/// leaves half of one. From pg-yard's `crates/agent/src/opamp.rs`.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
