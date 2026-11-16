@@ -269,6 +269,29 @@ describe('sync', () => {
     expect(await screen.findByText('You have no passkey')).toBeInTheDocument();
   });
 
+  it('says a waiting host applies at its next check-in, and only while one waits', async () => {
+    const approvals = [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: plan.reported_at, host_count: 1 }];
+    const checkIn = /picks up the change on its next check-in/;
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: { ...ready, status: 'applying', approvals, hosts: [picked(host.id, host.name, { step: 'waiting' })] },
+      },
+    });
+    const { unmount } = renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText(checkIn)).toBeInTheDocument();
+    unmount();
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: { ...ready, status: 'done', approvals, hosts: [picked(host.id, host.name, { step: 'applied' })] },
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText('Each host applies its own plan. Its steps are below.')).toBeInTheDocument();
+    expect(screen.queryByText(checkIn)).not.toBeInTheDocument();
+  });
+
   it('shows a failed host with its log and retries only that host', async () => {
     const user = userEvent.setup();
     authenticator();
