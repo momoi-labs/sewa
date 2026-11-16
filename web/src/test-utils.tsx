@@ -34,7 +34,7 @@ export function mockApi(replies: Record<string, Reply | ((body: unknown) => Repl
     calls.push({ method, path, body });
     const entry = replies[`${method} ${path}`];
     const reply = typeof entry === 'function' ? entry(body) : (entry ?? { status: 404, body: { error: 'not_found' } });
-    return new Response(JSON.stringify(reply.body ?? null), {
+    return new Response(reply.status === 204 ? null : JSON.stringify(reply.body ?? null), {
       status: reply.status,
       headers: { 'Content-Type': 'application/json' },
     });

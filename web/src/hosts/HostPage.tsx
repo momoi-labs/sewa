@@ -1,4 +1,8 @@
 import {
+  Alert,
+  AlertContent,
+  AlertDescription,
+  AlertTitle,
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -37,6 +41,7 @@ import { SkeletonRows } from '../components/SkeletonRows';
 import { Unknown } from '../components/Unknown';
 import { HostDesired, HostDrift } from '../desired/HostDesired';
 import { formatAgo, formatDateTime, formatReceived, osNames } from '../format';
+import { HostActions } from './HostActions';
 import { HostStatusBadge } from './HostStatusBadge';
 
 const route = getRouteApi('/hosts/$hostId');
@@ -70,12 +75,22 @@ export function HostPage() {
       ) : (
         <>
           <div className="between">
-            <PageHeader>
+            <PageHeader actions={host.data && <HostActions host={host.data} />}>
               <PageHeaderTitle>{host.data?.name ?? <Skeleton />}</PageHeaderTitle>
             </PageHeader>
             {host.data && <Lifecycle status={<HostStatusBadge status={host.data.status} />} />}
           </div>
           {host.isError && <ErrorAlert error={host.error} onRetry={() => void host.refetch()} />}
+          {host.data?.status === 'disabled' && (
+            <Alert variant="info">
+              <AlertContent>
+                <AlertTitle>This host is disabled</AlertTitle>
+                <AlertDescription>
+                  Its agent is refused and it gets no sync. Its history stays. Enable it to get a new install command.
+                </AlertDescription>
+              </AlertContent>
+            </Alert>
+          )}
           <Card className="detail-tabs">
             <Tabs defaultValue="summary" data-shadow-style="none">
               <TabsList aria-label="Host details">
@@ -140,6 +155,14 @@ function Summary({ host, now }: { host: Host; now: number }) {
       <KVValue>
         <Moment at={host.created_at} />
       </KVValue>
+      {host.disabled_at && (
+        <>
+          <KVKey>Disabled</KVKey>
+          <KVValue>
+            <Moment at={host.disabled_at} />
+          </KVValue>
+        </>
+      )}
       <KVKey>Enrolled</KVKey>
       <KVValue>{host.enrolled_at ? <Moment at={host.enrolled_at} /> : notYet('The host has not enrolled yet')}</KVValue>
       <KVKey>Last seen</KVKey>
@@ -171,6 +194,10 @@ export function describeEvent(event: HostEvent): string {
     }
     case 'host.enrolled':
       return 'Install token traded for an agent credential';
+    case 'host.disabled':
+      return `${by(event)} disabled the host and revoked its credentials`;
+    case 'host.enabled':
+      return `${by(event)} enabled the host with a new install command`;
     case 'host.connected':
       return 'Agent connected';
     case 'host.disconnected':

@@ -76,7 +76,7 @@ function NewSync() {
   const edits = useQuery(syncEditsQuery);
   const hosts = useQuery(hostsQuery);
   const enrolled = (hosts.data ?? [])
-    .filter((host) => host.enrolled_at !== null)
+    .filter((host) => host.enrolled_at !== null && host.status !== 'disabled')
     .sort((a, b) => byName(a.name, b.name));
   const [picked, setPicked] = useState<Set<string> | null>(null);
   const chosen = picked ?? new Set(enrolled.map((host) => host.id));

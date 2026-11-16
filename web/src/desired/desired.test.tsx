@@ -13,6 +13,7 @@ const host: Host = {
   os: 'linux',
   status: 'connected',
   created_at: '2026-01-01T10:00:00Z',
+  disabled_at: null,
   enrolled_at: '2026-01-01T10:01:00Z',
   last_seen_at: new Date().toISOString(),
   agent: null,

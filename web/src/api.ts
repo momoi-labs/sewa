@@ -3,7 +3,7 @@ import { queryOptions } from '@tanstack/react-query';
 /** How often the screens read the API again, so they follow the agents. */
 export const POLL_MS = 5000;
 
-export type HostStatus = 'waiting' | 'connected' | 'disconnected';
+export type HostStatus = 'waiting' | 'connected' | 'disconnected' | 'disabled';
 export type Os = 'linux' | 'macos';
 
 export type Agent = {
@@ -21,6 +21,7 @@ export type Host = {
   os: Os | null;
   status: HostStatus;
   created_at: string;
+  disabled_at: string | null;
   enrolled_at: string | null;
   last_seen_at: string | null;
   agent: Agent | null;
@@ -55,7 +56,7 @@ export class ApiFailure extends Error {
 }
 
 /** Calls the controller's API with JSON in and out. Throws ApiFailure on any error. */
-export async function api<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
+export async function api<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -128,6 +129,18 @@ export const eventsQuery = (id: string) =>
 
 export function createHost(name: string) {
   return api<Created>('POST', '/api/hosts', { name });
+}
+
+export function disableHost(id: string) {
+  return api<Host>('POST', `/api/hosts/${encodeURIComponent(id)}/disable`);
+}
+
+export function enableHost(id: string) {
+  return api<Created>('POST', `/api/hosts/${encodeURIComponent(id)}/enable`);
+}
+
+export function deleteHost(id: string) {
+  return api<null>('DELETE', `/api/hosts/${encodeURIComponent(id)}`);
 }
 
 export type ItemKind = 'package' | 'tool';

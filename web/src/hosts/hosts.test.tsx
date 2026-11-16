@@ -14,6 +14,7 @@ const connected: Host = {
   os: 'linux',
   status: 'connected',
   created_at: '2026-01-01T10:00:00Z',
+  disabled_at: null,
   enrolled_at: '2026-01-01T10:01:00Z',
   last_seen_at: seen,
   agent: { version: '0.1.0', hostname: 'build-1', os: 'linux', arch: 'amd64', user: 'root' },
@@ -25,6 +26,7 @@ const waiting: Host = {
   os: null,
   status: 'waiting',
   created_at: '2026-01-01T11:00:00Z',
+  disabled_at: null,
   enrolled_at: null,
   last_seen_at: null,
   agent: null,
@@ -202,5 +204,67 @@ describe('hosts', () => {
     mockApi({});
     renderRoute('/hosts/unknown');
     expect(await screen.findByText('This host does not exist')).toBeInTheDocument();
+  });
+
+  it('disables a host and shows the disabled state', async () => {
+    const user = userEvent.setup();
+    let disabled = false;
+    const off: Host = { ...connected, status: 'disabled', disabled_at: '2026-01-02T10:00:00Z' };
+    const calls = mockApi({
+      [`GET /api/hosts/${connected.id}`]: () => ({ status: 200, body: disabled ? off : connected }),
+      [`GET /api/hosts/${connected.id}/events`]: { status: 200, body: [] },
+      [`GET /api/hosts/${connected.id}/state`]: { status: 404, body: { error: 'not_found' } },
+      [`POST /api/hosts/${connected.id}/disable`]: () => {
+        disabled = true;
+        return { status: 200, body: off };
+      },
+    });
+    renderRoute(`/hosts/${connected.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Disable' }));
+    expect(await screen.findByText('This host is disabled')).toBeInTheDocument();
+    expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/disable'))).toBe(true);
+    expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+  });
+
+  it('enables a disabled host and shows its new install command', async () => {
+    const user = userEvent.setup();
+    const off: Host = { ...connected, status: 'disabled', disabled_at: '2026-01-02T10:00:00Z' };
+    mockApi({
+      [`GET /api/hosts/${connected.id}`]: { status: 200, body: off },
+      [`GET /api/hosts/${connected.id}/events`]: { status: 200, body: [] },
+      [`GET /api/hosts/${connected.id}/state`]: { status: 404, body: { error: 'not_found' } },
+      [`POST /api/hosts/${connected.id}/enable`]: {
+        status: 200,
+        body: {
+          host: { ...off, status: 'waiting', disabled_at: null },
+          install_command: "curl -fsSL 'http://controller.example/install' | sudo sh -s -- 'fresh'",
+          token_expires_at: '2026-01-02T11:00:00Z',
+        },
+      },
+    });
+    renderRoute(`/hosts/${connected.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Enable' }));
+    expect(await screen.findByText(/sudo sh -s -- 'fresh'/)).toBeInTheDocument();
+  });
+
+  it('asks before it deletes a host, then returns to the list', async () => {
+    const user = userEvent.setup();
+    const calls = mockApi({
+      [`GET /api/hosts/${connected.id}`]: { status: 200, body: connected },
+      [`GET /api/hosts/${connected.id}/events`]: { status: 200, body: [] },
+      [`GET /api/hosts/${connected.id}/state`]: { status: 404, body: { error: 'not_found' } },
+      'GET /api/hosts': { status: 200, body: [] },
+      [`DELETE /api/hosts/${connected.id}`]: { status: 204 },
+    });
+    renderRoute(`/hosts/${connected.id}`);
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Delete build-1?' });
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete host' }));
+    expect(await screen.findByText('No hosts yet')).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
   });
 });
