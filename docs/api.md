@@ -35,11 +35,13 @@ Errors from `/api` and `/v1/enroll` are JSON: `{"error": "<code>"}`.
 | 400 | `too_many_edits` | More than 500 host edits at once. |
 | 400 | `unknown_role` | The edit names a role that does not exist, or the built-in role. |
 | 400 | `no_hosts` | A sync picks no host. |
-| 400 | `unknown_host` | A sync picks a host that does not exist or never enrolled. |
+| 400 | `unknown_host` | A sync picks a host that does not exist, never enrolled, or is disabled. |
 | 401 | `token_invalid` | The install token is unknown, used, or expired. |
 | 403 | `not_tailnet` | WhoIs does not know the caller as a tailnet node. |
 | 403 | `not_admin` | The caller's login is not in `SEWA_ADMINS`. |
 | 404 | `not_found` | The host, role, or sync does not exist, or the path under `/api` is unknown. |
+| 409 | `already_disabled` | The host is disabled already. |
+| 409 | `not_disabled` | Enable calls a host that is not disabled. |
 | 409 | `name_taken` | A host or role with this name exists. |
 | 409 | `builtin_role` | A save or an adopt writes to the built-in role. sewa manages it, so it is read-only. |
 | 409 | `passkey_exists` | The credential is saved already. |
@@ -67,7 +69,7 @@ Response `201`:
 
 ```json
 {
-  "host": { "id": "…", "name": "build-1", "os": null, "status": "waiting", "created_at": "…", "enrolled_at": null, "last_seen_at": null, "agent": null },
+  "host": { "id": "…", "name": "build-1", "os": null, "status": "waiting", "created_at": "…", "disabled_at": null, "enrolled_at": null, "last_seen_at": null, "agent": null },
   "install_command": "curl -fsSL 'https://controller.example/install' | sudo sh -s -- '<token>'",
   "token_expires_at": "…"
 }
@@ -84,7 +86,10 @@ Lists hosts by name. Each host also has `roles`, a list of `{ "id", "name" }`
 by role name. It leaves out the built-in role, which every host has.
 `status` is:
 
-- `waiting`: the host never enrolled.
+- `disabled`: an admin disabled the host. `disabled_at` says when, and it
+  is null for any other status. It wins over the statuses below.
+- `waiting`: the host never enrolled, or it was enabled again and its agent
+  has not enrolled with the new token.
 - `connected`: the agent reported in the last 90 seconds.
 - `disconnected`: otherwise.
 
@@ -98,6 +103,55 @@ by role name. It leaves out the built-in role, which every host has.
 
 Returns one host, in the same shape as an item of `GET /api/hosts`, without
 `roles`.
+
+### `POST /api/hosts/{id}/disable`
+
+Stops a host and keeps its history. No body. In one transaction the
+controller:
+
+- sets `disabled_at`, so the host's status is `disabled`;
+- revokes the host's credentials. The agent's next call to `/v1/opamp`
+  gets `401`, so it gets no config and no approval. OpAMP is plain HTTP, so
+  there is no connection to drop: the host stops being `connected` at once;
+- expires the install tokens that are unused, so `/v1/enroll` refuses them;
+- takes the host out of the syncs in progress. A host in step `picked` goes
+  to `skipped`. A host in step `waiting` (signed, not reported) goes to
+  `failed`, with a log that says it was disabled, and its approval is never
+  delivered. Finished steps stay;
+- records `host.disabled`, with `data.by` and `data.revoked_credentials`.
+
+Returns `200` with the host, in the shape of `GET /api/hosts/{id}`. `404`
+`not_found`, or `409` `already_disabled`. A disabled host keeps its events,
+inventory, roles, and plans, and `GET` calls on it still work. It cannot
+join a new sync (`400` `unknown_host`), and a sync does not sign it.
+
+### `POST /api/hosts/{id}/enable`
+
+Turns a disabled host on again with a new install command. The old
+credentials stay revoked: the host is `waiting` until its agent enrolls
+with the new token, which is single use and valid for one hour, as in
+`POST /api/hosts`. Enrolling resets `enrolled_at`. A sync that ended as
+`skipped` or `failed` for the disable does not start again: pick the host
+in a new sync.
+
+Returns `200` with the same body as `POST /api/hosts` (`host`,
+`install_command`, `token_expires_at`). `404` `not_found`, or `409`
+`not_disabled`. Records `host.enabled`, with `data.by`.
+
+### `DELETE /api/hosts/{id}`
+
+Deletes a host, enabled or disabled: it needs no disable first. It removes
+what belongs only to the host: its events, install tokens, credentials
+(revoked ones too), roles, adjustments, plans, and its step in each sync.
+A sync that has no other host goes with its approvals and its events. A
+sync that covers other hosts stays, and so do its approvals: an approval
+is a signature over a list of hosts, which the controller does not edit.
+The host's id stays in that list.
+
+Returns `204`. `404` `not_found`. Nothing records the delete, because the
+host's events go with it. The controller logs it. This is the only delete
+of events: `events` still refuses any other `UPDATE` or `DELETE`. See
+`docs/adr/0004-disable-and-delete-hosts.md`.
 
 ### `GET /api/hosts/{id}/events`
 
@@ -269,7 +323,7 @@ host has changes to sign, and `done` otherwise.
 ### `POST /api/syncs`
 
 Takes `{"hosts": ["<host id>", …]}` and starts a sync. Every host must be
-enrolled. Returns `201` with the sync. `400` `no_hosts` or
+enrolled and not disabled. Returns `201` with the sync. `400` `no_hosts` or
 `unknown_host`. Records `sync.created` per host.
 
 ### `GET /api/syncs`
@@ -648,4 +702,6 @@ the last drift's. A plan that exits 0 ends the drift. Syncs add
 `apply.failed`, and `apply.replan`, which name the sync. Passkeys add
 `passkey.registered`, and drift actions `drift.adopted` and
 `drift.ignored`. Events from before syncs keep their old kinds, such as
-`change.approved`. The `events` table refuses updates and deletes.
+`change.approved`. An admin's disable and enable add `host.disabled` and `host.enabled`.
+The `events` table refuses updates, and refuses deletes except the one of
+`DELETE /api/hosts/{id}`.

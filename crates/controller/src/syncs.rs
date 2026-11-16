@@ -180,6 +180,7 @@ type SyncHostRow = (
     Option<String>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
     String,
     Option<String>,
     Option<String>,
@@ -196,7 +197,7 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
             .await?;
     let (created_at, created_by) = row.ok_or_else(not_found)?;
     let rows: Vec<SyncHostRow> = sqlx::query_as(
-        "SELECT h.id, h.name, h.os, h.enrolled_at, h.last_seen_at,
+        "SELECT h.id, h.name, h.os, h.disabled_at, h.enrolled_at, h.last_seen_at,
                 s.status, s.plan_hash, s.log, s.reported_at, s.received_at
          FROM sync_hosts s JOIN hosts h ON h.id = s.host_id
          WHERE s.sync_id = $1 ORDER BY h.name",
@@ -208,8 +209,19 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
     let now = Utc::now();
     let mut hosts = Vec::new();
     for row in rows {
-        let (host, name, os, enrolled_at, last_seen_at, step, plan_hash, log, reported, received) =
-            row;
+        let (
+            host,
+            name,
+            os,
+            disabled_at,
+            enrolled_at,
+            last_seen_at,
+            step,
+            plan_hash,
+            log,
+            reported,
+            received,
+        ) = row;
         let expected = desired::hash(&desired::host_config(host, &state));
         let plan_row: Option<PlanRow> = sqlx::query_as(SELECT_PLAN)
             .bind(host)
@@ -221,7 +233,7 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
             id: host,
             name,
             os,
-            status: status::status(enrolled_at, last_seen_at, now),
+            status: status::status(disabled_at, enrolled_at, last_seen_at, now),
             last_seen_at,
             roles: state
                 .roles_of(host)
@@ -328,8 +340,13 @@ pub async fn create(
     }
     let hosts: Vec<Uuid> = hosts.into_iter().collect();
     let mut transaction = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM hosts WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&hosts)
+        .fetch_all(&mut *transaction)
+        .await?;
     let found: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM hosts WHERE id = ANY($1) AND enrolled_at IS NOT NULL",
+        "SELECT count(*) FROM hosts
+         WHERE id = ANY($1) AND enrolled_at IS NOT NULL AND disabled_at IS NULL",
     )
     .bind(&hosts)
     .fetch_one(&mut *transaction)
@@ -392,6 +409,7 @@ async fn targets(
     };
     for host in &sync.hosts {
         if only.is_some_and(|only| !only.contains(&host.id))
+            || host.status == Status::Disabled
             || !matches!(host.step.as_str(), "picked" | "failed" | "replan")
         {
             continue;
@@ -503,6 +521,14 @@ pub async fn approve(
 ) -> ApiResult<Json<Sync>> {
     let id = sync_id(&id)?;
     let mut transaction = state.pool.begin().await?;
+    sqlx::query(
+        "SELECT id FROM hosts
+         WHERE id IN (SELECT host_id FROM sync_hosts WHERE sync_id = $1)
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_all(&mut *transaction)
+    .await?;
     let found: Option<Uuid> = sqlx::query_scalar("SELECT id FROM syncs WHERE id = $1 FOR UPDATE")
         .bind(id)
         .fetch_optional(&mut *transaction)
@@ -636,6 +662,10 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
     let received = Utc::now();
     let reported = status::reported_at(outcome.at, received);
     let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT 1 FROM hosts WHERE id = $1 FOR UPDATE")
+        .bind(host)
+        .fetch_optional(&mut *transaction)
+        .await?;
     let updated = sqlx::query(
         "UPDATE sync_hosts SET status = $4, log = $5, reported_at = $6, received_at = $7
          WHERE sync_id = $1 AND host_id = $2 AND approval_id = $3 AND status = 'waiting'",
