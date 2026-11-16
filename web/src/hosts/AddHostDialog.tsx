@@ -111,7 +111,7 @@ function AddHostForm({ onBusy, onClose }: { onBusy: (busy: boolean) => void; onC
 }
 
 /** The install command of a new host, with its live status until the agent answers. */
-function InstallStep({ created, onClose }: { created: Created; onClose: () => void }) {
+export function InstallStep({ created, onClose }: { created: Created; onClose: () => void }) {
   const hosts = useQuery(hostsQuery);
   const host = hosts.data?.find((item) => item.id === created.host.id) ?? created.host;
   return (

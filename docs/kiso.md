@@ -24,13 +24,14 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | `Shell` | The application shell with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand slot is tinted with the accent surface and shows the bold name over the instance address from `GET /api/instance`. |
 | `SewaMark` | The sewa emblem in the shell's brand. The brand kit is in `docs/brand/`. |
-| `HostStatusBadge` | A host's status: waiting, connected, or disconnected. Only the disconnected dot pulses. |
+| `HostStatusBadge` | A host's status: waiting, connected, disconnected, or disabled. Only the disconnected dot pulses. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
 | `ErrorPage` | The screen when a page's data fails to load with `not_admin`, a 5xx, or no answer: a brand illustration, the code, a title, one line, and one action. It fills the page with no shell, and the root route renders it. |
 | `Unknown` | A missing value: a muted dash with a tooltip that says why. |
 | `SkeletonRows` | Table rows while a list loads. |
 | `NotFound` | The screen for an unknown path. |
 | `AddHostDialog` | Creates a host and shows its install command once. |
+| `HostActions` | The Disable or Enable button and the Delete button in a host page's header. Disable acts at once and shows a toast. Enable opens the install command in a Dialog (`InstallStep`). Delete opens an AlertDialog that names what goes with the host, with Cancel and a destructive "Delete host", then returns to the list. |
 | `AddRoleDialog` | Creates an empty role, then opens it. |
 | `ItemTable` | A role's items as tables, one per source (OS default, Homebrew, Cask, pacman, AUR, mise tools), each in a Disclosure with its count. A Search filters the rows. The add field is a kind Select and a ChipInput with no chips, which keeps the prefix syntax and the suggestions from the other roles. Version (Input) and OS (Select) change in the row. Read-only for the built-in role. |
 | `SaveRoleDialog` | The items a role save adds, changes, and removes, and the button that saves them. |
@@ -65,6 +66,7 @@ contract disagree, the contract wins and this file has a bug.
 | Add a host | CRUD: a small record created in a dialog. |
 | Host (`/hosts/$hostId`) | List-detail, separate screens: the detail screen. |
 | Roles (`/roles`) | List-detail, separate screens: the list screen. |
+| Disable, enable and delete a host | Destructive actions: a Button pair in the page header. Delete confirms in an AlertDialog. Enable shows the new install command in a Dialog. A disabled host has an info Alert under the header. |
 | Add a role | CRUD: a small record created in a dialog. |
 | Role (`/roles/$roleId`) | Configuration form in numbered steps (`.form-steps`): Role, then Items in an `ItemTable`. A step with complete fields shows a check. FormActions is sticky and shows unsaved edits. Hosts get roles on the host page, not here. The built-in role shows its items read-only, with one line that sewa manages it, and no FormActions. |
 | Save a role | Confirmations: a dialog with the item diff (added, changed, removed) and "Save". |

@@ -6,12 +6,14 @@ const tones: Record<HostStatus, StatusTone> = {
   waiting: 'neutral',
   connected: 'success',
   disconnected: 'danger',
+  disabled: 'neutral',
 };
 
 const labels: Record<HostStatus, string> = {
   waiting: 'Waiting',
   connected: 'Connected',
   disconnected: 'Disconnected',
+  disabled: 'Disabled',
 };
 
 /** A host's status: neutral while it waits to enroll, success when its agent
