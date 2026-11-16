@@ -70,7 +70,9 @@ const OPAMP_LIMIT: usize = 1024 * 1024;
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/hosts", get(hosts::list).post(hosts::create))
-        .route("/hosts/{id}", get(hosts::get))
+        .route("/hosts/{id}", get(hosts::get).delete(hosts::delete))
+        .route("/hosts/{id}/disable", post(hosts::disable))
+        .route("/hosts/{id}/enable", post(hosts::enable))
         .route("/hosts/{id}/events", get(hosts::events))
         .route("/hosts/{id}/state", get(hosts::state))
         .route("/hosts/{id}/edits", post(hosts::edit))

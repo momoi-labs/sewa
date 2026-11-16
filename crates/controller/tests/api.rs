@@ -1660,3 +1660,270 @@ async fn drift_can_be_adopted_or_ignored(pool: PgPool) {
         assert!(kinds.contains(&kind.to_owned()), "{kind} in {kinds:?}");
     }
 }
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_disabled_host_is_refused_keeps_its_history_and_enables_with_a_new_token(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, _) = planned_host(&app, "build-1").await;
+    let (other, _, _) = planned_host(&app, "build-2").await;
+    register_passkey(&app, &Authenticator::new(1), ORIGIN).await;
+    let signed = start_sync(&app, json!([host])).await;
+    approve_with(&app, &signed, &Authenticator::new(1), None).await;
+    assert_eq!(get_sync(&app, &signed).await["hosts"][0]["step"], "waiting");
+    let picked = start_sync(&app, json!([host])).await;
+
+    let uri = format!("/api/hosts/{host}/disable");
+    let (status, disabled) = json_call(&app, ADMIN, "POST", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{disabled}");
+    assert_eq!(disabled["status"], "disabled");
+    assert!(disabled["disabled_at"].is_string());
+    assert_eq!(
+        json_call(&app, ADMIN, "POST", &uri, None).await,
+        (StatusCode::CONFLICT, json!({ "error": "already_disabled" }))
+    );
+    assert_eq!(
+        opamp(&app, &credential, &report(Uuid::new_v4(), true))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(get_sync(&app, &signed).await["hosts"][0]["step"], "failed");
+    assert_eq!(get_sync(&app, &picked).await["hosts"][0]["step"], "skipped");
+    assert_eq!(
+        json_call(
+            &app,
+            ADMIN,
+            "POST",
+            "/api/syncs",
+            Some(json!({ "hosts": [host] }))
+        )
+        .await,
+        (StatusCode::BAD_REQUEST, json!({ "error": "unknown_host" }))
+    );
+
+    let (_, listed) = json_call(&app, ADMIN, "GET", "/api/hosts", None).await;
+    assert_eq!(listed[0]["status"], "disabled");
+    assert_ne!(listed[1]["status"], "disabled");
+    let (status, _) = json_call(
+        &app,
+        ADMIN,
+        "GET",
+        &format!("/api/hosts/{host}/state"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let kinds = events(&pool, &host).await;
+    assert_eq!(kinds.last().map(String::as_str), Some("host.disabled"));
+    assert!(kinds.contains(&"host.enrolled".to_owned()));
+
+    assert_eq!(
+        json_call(
+            &app,
+            ADMIN,
+            "POST",
+            &format!("/api/hosts/{other}/enable"),
+            None
+        )
+        .await,
+        (StatusCode::CONFLICT, json!({ "error": "not_disabled" }))
+    );
+    let (status, enabled) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/hosts/{host}/enable"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enabled}");
+    assert_eq!(enabled["host"]["status"], "waiting");
+    assert!(enabled["token_expires_at"].is_string());
+    assert_eq!(
+        opamp(&app, &credential, &report(Uuid::new_v4(), true))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let command = enabled["install_command"].as_str().unwrap();
+    let token = command.rsplit(' ').next().unwrap().trim_matches('\'');
+    let (status, fresh) = enroll(&app, NODE, token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        opamp(&app, &fresh, &report(Uuid::new_v4(), true)).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(enroll(&app, NODE, token).await.0, StatusCode::UNAUTHORIZED);
+    let (_, shown) = json_call(&app, ADMIN, "GET", &format!("/api/hosts/{host}"), None).await;
+    assert_eq!(shown["status"], "connected");
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_disabled_host_does_not_enroll_with_an_old_token(pool: PgPool) {
+    let app = app(pool);
+    let (host, token) = create_host(&app, "node-1").await;
+    json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/hosts/{host}/disable"),
+        None,
+    )
+    .await;
+    assert_eq!(enroll(&app, NODE, &token).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn deleting_a_host_removes_what_belongs_only_to_it(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, _) = planned_host(&app, "build-1").await;
+    let (other, other_credential, _) = planned_host(&app, "build-2").await;
+    register_passkey(&app, &Authenticator::new(1), ORIGIN).await;
+    let shared = start_sync(&app, json!([host, other])).await;
+    approve_with(&app, &shared, &Authenticator::new(1), None).await;
+    let solo = start_sync(&app, json!([host])).await;
+    let other_events = events(&pool, &other).await;
+
+    let uri = format!("/api/hosts/{host}");
+    let (status, _) = call(
+        &app,
+        ADMIN,
+        Request::delete(&uri).body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for path in [
+        uri.clone(),
+        format!("{uri}/events"),
+        format!("{uri}/state"),
+        format!("/api/syncs/{solo}"),
+    ] {
+        assert_eq!(
+            json_call(&app, ADMIN, "GET", &path, None).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        opamp(&app, &credential, &report(Uuid::new_v4(), true))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let kept = get_sync(&app, &shared).await;
+    assert_eq!(kept["hosts"].as_array().unwrap().len(), 1);
+    assert_eq!(kept["hosts"][0]["id"], other);
+    assert_eq!(kept["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(events(&pool, &other).await, other_events);
+    assert_eq!(
+        opamp(&app, &other_credential, &report(Uuid::new_v4(), false))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let leftovers: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM events WHERE host_id IS NULL AND sync_id = $1)
+              + (SELECT count(*) FROM approvals WHERE sync_id = $1)",
+    )
+    .bind(solo.parse::<Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(leftovers, 0);
+    assert!(
+        sqlx::query("DELETE FROM events")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        json_call(
+            &app,
+            ADMIN,
+            "POST",
+            &format!("/api/hosts/{other}/disable"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (status, _) = call(
+        &app,
+        ADMIN,
+        Request::delete(format!("/api/hosts/{other}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        &app,
+        ADMIN,
+        Request::delete(&uri).body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn an_outcome_locks_the_host_before_its_sync_row(pool: PgPool) {
+    let host: Uuid =
+        sqlx::query_scalar("INSERT INTO hosts (name) VALUES ('outcome-host') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let passkey: Uuid = sqlx::query_scalar(
+        "INSERT INTO passkeys (login, name, credential_id, public_key)
+         VALUES ('a', 'k', '\\x01', '\\x02') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let sync: Uuid = sqlx::query_scalar("INSERT INTO syncs (created_by) VALUES ('a') RETURNING id")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let approval: Uuid = sqlx::query_scalar(
+        "INSERT INTO approvals (sync_id, by, passkey_id, hosts, assertion)
+         VALUES ($1, 'a', $2, '[]', '{}') RETURNING id",
+    )
+    .bind(sync)
+    .bind(passkey)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_hosts (sync_id, host_id, status, approval_id, plan_hash)
+         VALUES ($1, $2, 'waiting', $3, 'p')",
+    )
+    .bind(sync)
+    .bind(host)
+    .bind(approval)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut deleting = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM hosts WHERE id = $1 FOR UPDATE")
+        .bind(host)
+        .execute(&mut *deleting)
+        .await
+        .unwrap();
+    let outcome: Outcome = serde_json::from_value(json!({
+        "approval_id": approval, "change_id": sync, "status": "failed",
+        "plan_hash": "p", "log": "",
+    }))
+    .unwrap();
+    let saving = tokio::spawn({
+        let pool = pool.clone();
+        async move { sewa_controller::syncs::save_outcome(&pool, host, &outcome).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sqlx::query("DELETE FROM sync_hosts WHERE host_id = $1")
+        .bind(host)
+        .execute(&mut *deleting)
+        .await
+        .unwrap();
+    deleting.commit().await.unwrap();
+    saving.await.unwrap().unwrap();
+}

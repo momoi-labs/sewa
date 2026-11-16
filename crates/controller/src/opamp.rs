@@ -228,6 +228,10 @@ async fn save_plan(pool: &sqlx::PgPool, host: Uuid, report: &PlanReport) -> sqlx
         return Ok(());
     }
     let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT 1 FROM hosts WHERE id = $1 FOR UPDATE")
+        .bind(host)
+        .fetch_optional(&mut *transaction)
+        .await?;
     let text = |value: &str| value.replace('\0', "");
     let received = Utc::now();
     let reported = status::reported_at(report.at, received);
@@ -431,6 +435,46 @@ mod tests {
                 value: Some(Value::StringValue(value.to_owned())),
             }),
         }
+    }
+
+    #[sqlx::test(migrator = "crate::MIGRATOR")]
+    async fn a_plan_locks_the_host_before_its_plan_row(pool: sqlx::PgPool) {
+        let host: Uuid =
+            sqlx::query_scalar("INSERT INTO hosts (name) VALUES ('plan-host') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query(
+            "INSERT INTO host_plans (host_id, config, config_hash, plan_hash, exit_code)
+             VALUES ($1, 'current', 'a', 'b', 2)",
+        )
+        .bind(host)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut deleting = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM hosts WHERE id = $1 FOR UPDATE")
+            .bind(host)
+            .execute(&mut *deleting)
+            .await
+            .unwrap();
+        let report: PlanReport = serde_json::from_value(serde_json::json!({
+            "config": "current", "config_hash": "a", "plan_hash": "c",
+            "exit_code": 0, "plan": null, "error": null, "explicit": null,
+        }))
+        .unwrap();
+        let saving = tokio::spawn({
+            let pool = pool.clone();
+            async move { save_plan(&pool, host, &report).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        sqlx::query("DELETE FROM host_plans WHERE host_id = $1")
+            .bind(host)
+            .execute(&mut *deleting)
+            .await
+            .unwrap();
+        deleting.commit().await.unwrap();
+        saving.await.unwrap().unwrap();
     }
 
     #[test]

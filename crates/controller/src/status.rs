@@ -16,6 +16,7 @@ pub const CONNECTED_WINDOW: Duration = Duration::seconds(90);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    Disabled,
     /// The host never enrolled.
     Waiting,
     /// Its agent's last message arrived within [`CONNECTED_WINDOW`].
@@ -26,10 +27,14 @@ pub enum Status {
 }
 
 pub fn status(
+    disabled_at: Option<DateTime<Utc>>,
     enrolled_at: Option<DateTime<Utc>>,
     last_seen_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Status {
+    if disabled_at.is_some() {
+        return Status::Disabled;
+    }
     if enrolled_at.is_none() {
         return Status::Waiting;
     }
@@ -106,12 +111,19 @@ mod tests {
 
     #[test]
     fn statuses_and_their_boundaries() {
-        assert_eq!(status(None, None, at(0)), Status::Waiting);
-        assert_eq!(status(Some(at(0)), None, at(0)), Status::Disconnected);
-        assert_eq!(status(Some(at(0)), Some(at(0)), at(90)), Status::Connected);
+        assert_eq!(status(None, None, None, at(0)), Status::Waiting);
+        assert_eq!(status(None, Some(at(0)), None, at(0)), Status::Disconnected);
         assert_eq!(
-            status(Some(at(0)), Some(at(0)), at(91)),
+            status(None, Some(at(0)), Some(at(0)), at(90)),
+            Status::Connected
+        );
+        assert_eq!(
+            status(None, Some(at(0)), Some(at(0)), at(91)),
             Status::Disconnected
+        );
+        assert_eq!(
+            status(Some(at(0)), Some(at(0)), Some(at(0)), at(1)),
+            Status::Disabled
         );
     }
 }

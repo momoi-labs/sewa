@@ -96,6 +96,7 @@ pub struct Host {
     pub os: Option<String>,
     pub status: Status,
     pub created_at: DateTime<Utc>,
+    pub disabled_at: Option<DateTime<Utc>>,
     pub enrolled_at: Option<DateTime<Utc>>,
     pub last_seen_at: Option<DateTime<Utc>>,
     /// What the agent last described; null until it sends a description.
@@ -119,6 +120,24 @@ pub fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+async fn issue_token(
+    connection: &mut sqlx::PgConnection,
+    host: Uuid,
+) -> sqlx::Result<(String, DateTime<Utc>)> {
+    let token = secret::token();
+    let expires_at: DateTime<Utc> = sqlx::query_scalar(
+        "INSERT INTO install_tokens (token_hash, host_id, expires_at)
+         VALUES ($1, $2, now() + make_interval(secs => $3))
+         RETURNING expires_at",
+    )
+    .bind(secret::hash(&token))
+    .bind(host)
+    .bind(TOKEN_LIFETIME.num_seconds() as f64)
+    .fetch_one(connection)
+    .await?;
+    Ok((token, expires_at))
+}
+
 /// `POST /api/hosts`: stores a host as waiting and returns its install
 /// command with a fresh single-use token.
 pub async fn create(
@@ -138,17 +157,7 @@ pub async fn create(
     .fetch_optional(&mut *transaction)
     .await?;
     let (id, created_at) = row.ok_or(Failure::new(StatusCode::CONFLICT, "name_taken"))?;
-    let token = secret::token();
-    let expires_at: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO install_tokens (token_hash, host_id, expires_at)
-         VALUES ($1, $2, now() + make_interval(secs => $3))
-         RETURNING expires_at",
-    )
-    .bind(secret::hash(&token))
-    .bind(id)
-    .bind(TOKEN_LIFETIME.num_seconds() as f64)
-    .fetch_one(&mut *transaction)
-    .await?;
+    let (token, expires_at) = issue_token(&mut transaction, id).await?;
     events::record(
         &mut transaction,
         id,
@@ -165,6 +174,7 @@ pub async fn create(
             os: None,
             status: Status::Waiting,
             created_at,
+            disabled_at: None,
             enrolled_at: None,
             last_seen_at: None,
             agent: None,
@@ -182,6 +192,7 @@ type Row = (
     DateTime<Utc>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
     Option<Uuid>,
     Option<String>,
     Option<String>,
@@ -194,7 +205,7 @@ type Row = (
 macro_rules! select_hosts {
     ($rest:literal) => {
         concat!(
-            "SELECT id, name, os, created_at, enrolled_at, last_seen_at, agent_instance_uid,
+            "SELECT id, name, os, created_at, disabled_at, enrolled_at, last_seen_at, agent_instance_uid,
                     agent_version, agent_hostname, agent_os, agent_arch, agent_user
              FROM hosts ",
             $rest
@@ -208,6 +219,7 @@ fn host(row: Row, now: DateTime<Utc>) -> Host {
         name,
         os,
         created_at,
+        disabled_at,
         enrolled_at,
         last_seen_at,
         instance,
@@ -221,8 +233,9 @@ fn host(row: Row, now: DateTime<Utc>) -> Host {
         id,
         name,
         os,
-        status: status(enrolled_at, last_seen_at, now),
+        status: status(disabled_at, enrolled_at, last_seen_at, now),
         created_at,
+        disabled_at,
         enrolled_at,
         last_seen_at,
         agent: instance.map(|_| Agent {
@@ -292,6 +305,174 @@ pub async fn get(State(state): State<AppState>, Path(id): Path<String>) -> ApiRe
         .await?;
     let row = row.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))?;
     Ok(Json(host(row, Utc::now())))
+}
+
+async fn lock(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<bool> {
+    let disabled: Option<bool> =
+        sqlx::query_scalar("SELECT disabled_at IS NOT NULL FROM hosts WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(connection)
+            .await?;
+    disabled.ok_or(Failure::new(StatusCode::NOT_FOUND, "not_found"))
+}
+
+async fn read(connection: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<Host> {
+    let row: Row = sqlx::query_as(select_hosts!("WHERE id = $1"))
+        .bind(id)
+        .fetch_one(connection)
+        .await?;
+    Ok(host(row, Utc::now()))
+}
+
+pub async fn disable(
+    State(state): State<AppState>,
+    Extension(identity): Extension<Identity>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Host>> {
+    let id = host_id(&id)?;
+    let mut transaction = state.pool.begin().await?;
+    if lock(&mut transaction, id).await? {
+        return Err(Failure::new(StatusCode::CONFLICT, "already_disabled"));
+    }
+    sqlx::query("UPDATE hosts SET disabled_at = now(), connected = false WHERE id = $1")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    let revoked = sqlx::query(
+        "UPDATE agent_credentials SET revoked_at = now()
+         WHERE host_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "UPDATE install_tokens SET expires_at = now()
+         WHERE host_id = $1 AND used_at IS NULL AND expires_at > now()",
+    )
+    .bind(id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE sync_hosts SET status = 'skipped' WHERE host_id = $1 AND status = 'picked'",
+    )
+    .bind(id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE sync_hosts SET status = 'failed', reported_at = now(), received_at = now(),
+             log = 'The host was disabled before its agent reported.'
+         WHERE host_id = $1 AND status = 'waiting'",
+    )
+    .bind(id)
+    .execute(&mut *transaction)
+    .await?;
+    events::record(
+        &mut transaction,
+        id,
+        events::HOST_DISABLED,
+        serde_json::json!({ "by": identity.login, "revoked_credentials": revoked }),
+    )
+    .await?;
+    let host = read(&mut transaction, id).await?;
+    transaction.commit().await?;
+    tracing::info!(host = %id, "host disabled");
+    Ok(Json(host))
+}
+
+pub async fn enable(
+    State(state): State<AppState>,
+    Extension(identity): Extension<Identity>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Created>> {
+    let id = host_id(&id)?;
+    let mut transaction = state.pool.begin().await?;
+    if !lock(&mut transaction, id).await? {
+        return Err(Failure::new(StatusCode::CONFLICT, "not_disabled"));
+    }
+    sqlx::query("UPDATE hosts SET disabled_at = NULL, enrolled_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    let (token, expires_at) = issue_token(&mut transaction, id).await?;
+    events::record(
+        &mut transaction,
+        id,
+        events::HOST_ENABLED,
+        serde_json::json!({ "by": identity.login }),
+    )
+    .await?;
+    let host = read(&mut transaction, id).await?;
+    transaction.commit().await?;
+    tracing::info!(host = %id, "host enabled");
+    Ok(Json(Created {
+        host,
+        install_command: install::command(&state.public_url, &token),
+        token_expires_at: expires_at,
+    }))
+}
+
+pub async fn delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let id = host_id(&id)?;
+    let mut transaction = state.pool.begin().await?;
+    lock(&mut transaction, id).await?;
+    sqlx::query("SELECT set_config('sewa.deleting_host', 'on', true)")
+        .execute(&mut *transaction)
+        .await?;
+    let syncs: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM syncs
+         WHERE id IN (SELECT sync_id FROM sync_hosts WHERE host_id = $1)
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    macro_rules! forget {
+        ($($table:literal),*) => {$(
+            sqlx::query(concat!("DELETE FROM ", $table, " WHERE host_id = $1"))
+                .bind(id)
+                .execute(&mut *transaction)
+                .await?;
+        )*};
+    }
+    forget!(
+        "events",
+        "sync_hosts",
+        "host_plans",
+        "host_roles",
+        "host_adjustments",
+        "install_tokens",
+        "agent_credentials"
+    );
+    let alone: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM syncs
+         WHERE id = ANY($1) AND NOT EXISTS (SELECT 1 FROM sync_hosts WHERE sync_id = syncs.id)",
+    )
+    .bind(&syncs)
+    .fetch_all(&mut *transaction)
+    .await?;
+    sqlx::query("DELETE FROM events WHERE sync_id = ANY($1)")
+        .bind(&alone)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM approvals WHERE sync_id = ANY($1)")
+        .bind(&alone)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM syncs WHERE id = ANY($1)")
+        .bind(&alone)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM hosts WHERE id = $1")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    tracing::info!(host = %id, "host deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Serialize)]
