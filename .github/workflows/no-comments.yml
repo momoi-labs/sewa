@@ -1,0 +1,21 @@
+name: No comments
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: no-comments-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: No new comments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: dev/check-no-comments.sh "origin/${{ github.base_ref }}"

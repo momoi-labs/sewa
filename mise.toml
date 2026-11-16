@@ -4,6 +4,21 @@ rust = "1.98"
 zig = "0.15.2"
 "cargo:cargo-zigbuild" = "0.23.0"
 
+[tasks.no-comments]
+run = "dev/check-no-comments.sh"
+
+[tasks.check]
+depends = ["no-comments"]
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo test --workspace",
+  "npm --prefix web run lint",
+  "npm --prefix web run typecheck",
+  "npm --prefix web test",
+  "npm --prefix web exec -- vite build",
+]
+
 [env]
 # The PostgreSQL of compose.yml, for the controller's tests.
 DATABASE_URL = "postgres://sewa:sewa@127.0.0.1:55441/sewa"
