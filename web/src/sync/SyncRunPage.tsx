@@ -189,7 +189,16 @@ function Run({ sync }: { sync: Sync }) {
             .filter(Boolean)
             .join(', ')
         : undefined,
-      detail: signed ? <p className="muted">Each host applies its own plan. Its steps are below.</p> : undefined,
+      detail: signed ? (
+        <div className="stack-sm">
+          <p className="muted">Each host applies its own plan. Its steps are below.</p>
+          {hosts.waiting.length > 0 && (
+            <p className="muted">
+              A waiting host picks up the change on its next check-in, within 30 seconds.
+            </p>
+          )}
+        </div>
+      ) : undefined,
     },
   ];
 
