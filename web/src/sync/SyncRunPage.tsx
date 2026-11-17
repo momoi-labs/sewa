@@ -356,7 +356,7 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
           </CardContent>
         </Card>
         {!narrow && detail && (
-          <Card>
+          <Card className="run-detail">
             <CardContent>{detail}</CardContent>
           </Card>
         )}
@@ -444,14 +444,18 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
   );
 }
 
+const FEED_LIMIT = 10;
+
 function ActivityFeed({ sync }: { sync: Sync }) {
+  const [all, setAll] = useState(false);
   const events = activity(sync);
+  const shown = all ? events : events.slice(0, FEED_LIMIT);
   return (
     <Card>
       <CardContent className="stack-sm">
         <h2 className="t-caps">Activity</h2>
         <ol className="activity-feed" aria-label="Activity">
-          {events.map((event) => (
+          {shown.map((event) => (
             <li key={event.key}>
               <time className="mono muted" dateTime={event.at}>
                 {formatClock(event.at)}
@@ -463,6 +467,13 @@ function ActivityFeed({ sync }: { sync: Sync }) {
             </li>
           ))}
         </ol>
+        {events.length > FEED_LIMIT && (
+          <div className="row-wrap">
+            <Button type="button" size="sm" aria-expanded={all} onClick={() => setAll(!all)}>
+              {all ? 'Show fewer' : `Show all ${events.length}`}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
