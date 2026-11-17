@@ -115,24 +115,6 @@ export function orderHosts(hosts: SyncHost[]): SyncHost[] {
   );
 }
 
-export type ActivityEvent = { key: string; at: string; kind: 'signed' | 'applied' | 'failed'; who: string; what: string };
-
-export function activity(sync: Sync): ActivityEvent[] {
-  const events: ActivityEvent[] = sync.approvals.map((approval) => ({
-    key: `approval-${approval.id}`,
-    at: approval.created_at,
-    kind: 'signed',
-    who: approval.by,
-    what: `signed ${plural(approval.host_count, 'plan')} with passkey ${approval.passkey}`,
-  }));
-  for (const host of sync.hosts) {
-    const at = host.result?.reported_at ?? host.result?.received_at;
-    if (!at || (host.step !== 'applied' && host.step !== 'failed')) continue;
-    events.push({ key: `host-${host.id}`, at, kind: host.step, who: host.name, what: host.step });
-  }
-  return events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-}
-
 export function finishedAt(sync: Sync): string {
   let last = sync.approvals.at(-1)?.created_at ?? sync.created_at;
   for (const host of sync.hosts) {

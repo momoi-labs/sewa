@@ -41,7 +41,6 @@ import { signApproval } from '../webauthn';
 import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
 import {
-  activity,
   filterOf,
   finishedAt,
   type HostFilter,
@@ -361,7 +360,6 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
           </Card>
         )}
       </div>
-      <ActivityFeed sync={sync} />
     </>
   );
 }
@@ -441,41 +439,6 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
         </div>
       )}
     </section>
-  );
-}
-
-const FEED_LIMIT = 10;
-
-function ActivityFeed({ sync }: { sync: Sync }) {
-  const [all, setAll] = useState(false);
-  const events = activity(sync);
-  const shown = all ? events : events.slice(0, FEED_LIMIT);
-  return (
-    <Card>
-      <CardContent className="stack-sm">
-        <h2 className="t-caps">Activity</h2>
-        <ol className="activity-feed" aria-label="Activity">
-          {shown.map((event) => (
-            <li key={event.key}>
-              <time className="mono muted" dateTime={event.at}>
-                {formatClock(event.at)}
-              </time>
-              <Dot variant={event.kind === 'failed' ? 'danger' : 'success'} aria-hidden="true" />
-              <span className="activity-text">
-                <strong>{event.who}</strong> {event.what}
-              </span>
-            </li>
-          ))}
-        </ol>
-        {events.length > FEED_LIMIT && (
-          <div className="row-wrap">
-            <Button type="button" size="sm" aria-expanded={all} onClick={() => setAll(!all)}>
-              {all ? 'Show fewer' : `Show all ${events.length}`}
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }
 

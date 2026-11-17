@@ -169,9 +169,6 @@
 .host-detail-title { min-width: 0; }
 .host-detail-name { overflow-wrap: anywhere; margin: 0; }
 .host-detail-head { align-items: flex-start; }
-.activity-feed { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-sm); }
-.activity-feed > li { display: grid; grid-template-columns: 5rem auto minmax(0, 1fr); align-items: baseline; gap: var(--spacing-sm); }
-.activity-text { overflow-wrap: anywhere; }
 
 @media (min-width: 720px) {
   .host-list { max-block-size: calc(100vh - var(--bar-height) - var(--spacing-4xl)); overflow-y: auto; }
@@ -181,6 +178,4 @@
 @media (max-width: 719px) {
   .run-split { grid-template-columns: minmax(0, 1fr); }
   .host-row + .host-detail { padding: var(--spacing-md) var(--spacing-sm); border-block-end: 1px solid var(--color-border); background: var(--color-card); }
-  .activity-feed > li { grid-template-columns: auto minmax(0, 1fr); }
-  .activity-feed > li > time { grid-column: 1 / -1; }
 }
