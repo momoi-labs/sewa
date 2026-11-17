@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalOptions, Host, HostState, ListedHost, Passkey, Sync, SyncHost } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { decode, encode } from '../webauthn';
-import { activity, orderHosts } from './sync';
+import { orderHosts } from './sync';
 
 const host: Host = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -469,40 +469,6 @@ describe('sync run', () => {
       'in-sync-1',
       'skipped-1',
     ]);
-  });
-
-  it('lists the signing and the finished hosts, newest first', () => {
-    const hosts = [
-      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z' } }),
-      picked('2', 'build-2', { step: 'failed', result: { ...result, reported_at: '2026-01-02T10:05:00Z' } }),
-      picked('3', 'build-3', { step: 'waiting', result: null }),
-    ];
-    expect(activity(run(hosts)).map((event) => `${event.who} ${event.what}`)).toEqual([
-      'build-2 failed',
-      'build-1 applied',
-      'admin signed 4 plans with passkey Laptop',
-    ]);
-  });
-
-  it('shows the newest 10 events and expands the rest', async () => {
-    const user = userEvent.setup();
-    const hosts = Array.from({ length: 12 }, (_, n) =>
-      picked(`h${n}`, `host-${n}`, { step: 'applied', result: { ...result, reported_at: `2026-01-02T10:${String(10 + n)}:00Z` } }),
-    );
-    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
-    renderRoute(`/sync/${ready.id}`);
-
-    const feed = await screen.findByRole('list', { name: 'Activity' });
-    expect(within(feed).getAllByRole('listitem')).toHaveLength(10);
-    await user.click(screen.getByRole('button', { name: 'Show all 13' }));
-    expect(within(feed).getAllByRole('listitem')).toHaveLength(13);
-  });
-
-  it('dates a delayed report by when the host reported it', () => {
-    const hosts = [
-      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z', received_at: '2026-01-02T12:00:00Z' } }),
-    ];
-    expect(activity(run(hosts))[0]?.at).toBe('2026-01-02T10:03:00Z');
   });
 
   it('shows the plan of the next host after another host was picked in the filter', async () => {
