@@ -126,7 +126,7 @@ export function activity(sync: Sync): ActivityEvent[] {
     what: `signed ${plural(approval.host_count, 'plan')} with passkey ${approval.passkey}`,
   }));
   for (const host of sync.hosts) {
-    const at = host.result?.received_at ?? host.result?.reported_at;
+    const at = host.result?.reported_at ?? host.result?.received_at;
     if (!at || (host.step !== 'applied' && host.step !== 'failed')) continue;
     events.push({ key: `host-${host.id}`, at, kind: host.step, who: host.name, what: host.step });
   }
