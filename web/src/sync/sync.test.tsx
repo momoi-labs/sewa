@@ -484,6 +484,20 @@ describe('sync run', () => {
     ]);
   });
 
+  it('shows the newest 10 events and expands the rest', async () => {
+    const user = userEvent.setup();
+    const hosts = Array.from({ length: 12 }, (_, n) =>
+      picked(`h${n}`, `host-${n}`, { step: 'applied', result: { ...result, reported_at: `2026-01-02T10:${String(10 + n)}:00Z` } }),
+    );
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    const feed = await screen.findByRole('list', { name: 'Activity' });
+    expect(within(feed).getAllByRole('listitem')).toHaveLength(10);
+    await user.click(screen.getByRole('button', { name: 'Show all 13' }));
+    expect(within(feed).getAllByRole('listitem')).toHaveLength(13);
+  });
+
   it('dates a delayed report by when the host reported it', () => {
     const hosts = [
       picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z', received_at: '2026-01-02T12:00:00Z' } }),
