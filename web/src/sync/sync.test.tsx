@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalOptions, Host, HostState, ListedHost, Passkey, Sync, SyncHost } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { decode, encode } from '../webauthn';
+import { activity, orderHosts } from './sync';
 
 const host: Host = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -288,7 +289,7 @@ describe('sync', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
-    expect(await screen.findByText('Each host applies its own plan. Its steps are below.')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Applied 1' })).toBeInTheDocument();
     expect(screen.queryByText(checkIn)).not.toBeInTheDocument();
   });
 
@@ -440,6 +441,121 @@ describe('sync', () => {
     expect(await screen.findByText('The plans changed')).toBeInTheDocument();
     expect(get).not.toHaveBeenCalled();
     expect(calls.some((call) => call.path.endsWith('/approve'))).toBe(false);
+  });
+});
+
+describe('sync run', () => {
+  const result = { plan_hash: 'p1', log: null, reported_at: '2026-01-02T10:05:00Z', received_at: null };
+  const approvals = [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: '2026-01-02T10:02:00Z', host_count: 4 }];
+  const run = (hosts: SyncHost[], status: Sync['status'] = 'done'): Sync => ({ ...ready, status, approvals, hosts });
+  const rows = () => within(screen.getByRole('list', { name: 'Hosts' })).getAllByRole('button').map((row) => row.textContent);
+
+  it('orders failed, replan, waiting, applied, in sync, then skipped, by name', () => {
+    const hosts = [
+      picked('1', 'skipped-1', { step: 'skipped' }),
+      picked('2', 'in-sync-1', { step: 'in_sync' }),
+      picked('3', 'applied-1', { step: 'applied' }),
+      picked('4', 'waiting-1', { step: 'waiting' }),
+      picked('5', 'replan-1', { step: 'replan' }),
+      picked('6', 'build-10', { step: 'failed' }),
+      picked('7', 'build-2', { step: 'failed' }),
+    ];
+    expect(orderHosts(hosts).map((host) => host.name)).toEqual([
+      'build-2',
+      'build-10',
+      'replan-1',
+      'waiting-1',
+      'applied-1',
+      'in-sync-1',
+      'skipped-1',
+    ]);
+  });
+
+  it('lists the signing and the finished hosts, newest first', () => {
+    const hosts = [
+      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z' } }),
+      picked('2', 'build-2', { step: 'failed', result: { ...result, reported_at: '2026-01-02T10:05:00Z' } }),
+      picked('3', 'build-3', { step: 'waiting', result: null }),
+    ];
+    expect(activity(run(hosts)).map((event) => `${event.who} ${event.what}`)).toEqual([
+      'build-2 failed',
+      'build-1 applied',
+      'admin signed 4 plans with passkey Laptop',
+    ]);
+  });
+
+  it('puts the failed hosts of 40 on top, selects the first and counts each filter', async () => {
+    const user = userEvent.setup();
+    const hosts = Array.from({ length: 40 }, (_, n) => {
+      const name = `host-${String(n).padStart(2, '0')}`;
+      const step: SyncHost['step'] = [10, 20, 30].includes(n) ? 'failed' : n < 33 ? 'applied' : n < 36 ? 'waiting' : n < 39 ? 'in_sync' : 'skipped';
+      return picked(`id-${n}`, name, { step, result: step === 'failed' ? { ...result, log: `boom ${name}` } : result });
+    });
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'applying') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    await screen.findByRole('list', { name: 'Hosts' });
+    expect(rows().slice(0, 4)).toEqual(['host-10Failed', 'host-20Failed', 'host-30Failed', 'host-33Waiting']);
+    expect(screen.getByRole('region', { name: 'host-10 detail' })).toHaveTextContent('boom host-10');
+    expect(screen.getByRole('button', { name: 'Failed 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Waiting 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Applied 30' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'In sync 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skipped 1' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Skipped 1' }));
+    expect(rows()).toEqual(['host-39Skipped']);
+    expect(screen.getByRole('region', { name: 'host-39 detail' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Skipped 1' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'host-2');
+    expect(rows()).toEqual(['host-20Failed', 'host-21Applied', 'host-22Applied', 'host-23Applied', 'host-24Applied', 'host-25Applied', 'host-26Applied', 'host-27Applied', 'host-28Applied', 'host-29Applied']);
+  });
+
+  it('shows a replan host with its own label and a retry', async () => {
+    const user = userEvent.setup();
+    authenticator();
+    let retried = false;
+    const calls = mockApi({
+      [`GET /api/syncs/${ready.id}`]: () => ({
+        status: 200,
+        body: run([picked('r', 'build-r', { step: retried ? 'waiting' : 'replan', result })], retried ? 'applying' : 'done'),
+      }),
+      [`POST /api/syncs/${ready.id}/approval`]: { status: 200, body: { ...options, hosts: [{ ...options.hosts[0]!, host_id: 'r' }] } },
+      [`POST /api/syncs/${ready.id}/approve`]: () => {
+        retried = true;
+        return { status: 200, body: run([picked('r', 'build-r', { step: 'waiting', result })], 'applying') };
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    const detail = await screen.findByRole('region', { name: 'build-r detail' });
+    expect(within(detail).getByText('Plan changed, nothing ran')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Failed 1' })).toBeInTheDocument();
+    await user.click(within(detail).getByRole('button', { name: 'Retry build-r' }));
+    await waitFor(() => expect(calls.find((call) => call.path.endsWith('/approve'))?.body).toMatchObject({ hosts: ['r'] }));
+    expect(await screen.findByText(/picks up the change on its next check-in/)).toBeInTheDocument();
+  });
+
+  it('says why a waiting host that is offline does nothing', async () => {
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: run([picked('w', 'build-w', { step: 'waiting', status: 'disconnected', result })], 'applying'),
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText(/This host is offline, so nothing happens yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/picks up the change on its next check-in/)).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Install (1)' })).toBeInTheDocument();
+  });
+
+  it('says the controller keeps only the end of a long log', async () => {
+    const log = `…${'x'.repeat(50)}\nlast line`;
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('f', 'f'.repeat(80), { step: 'failed', result: { ...result, log } })]) },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText('The controller keeps only the end of a long log.')).toBeInTheDocument();
+    expect(screen.getByText('last line')).toBeInTheDocument();
   });
 });
 
