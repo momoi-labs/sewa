@@ -411,7 +411,7 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
       {showPlan && (
         <section className="stack-sm">
           <h3 className="t-caps">Plan</h3>
-          <PlanByPackage hosts={[host]} />
+          <PlanByPackage key={host.id} hosts={[host]} />
         </section>
       )}
       {log && (

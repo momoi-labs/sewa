@@ -484,6 +484,28 @@ describe('sync run', () => {
     ]);
   });
 
+  it('dates a delayed report by when the host reported it', () => {
+    const hosts = [
+      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z', received_at: '2026-01-02T12:00:00Z' } }),
+    ];
+    expect(activity(run(hosts))[0]?.at).toBe('2026-01-02T10:03:00Z');
+  });
+
+  it('shows the plan of the next host after another host was picked in the filter', async () => {
+    const user = userEvent.setup();
+    const hosts = [
+      picked('a', 'build-a', { step: 'failed', result }),
+      picked('b', 'build-b', { step: 'failed', result }),
+    ];
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    await screen.findByRole('list', { name: 'Hosts' });
+    await user.type(screen.getByRole('searchbox', { name: 'Filter packages' }), 'zzz');
+    await user.click(screen.getByRole('button', { name: /build-b/ }));
+    expect(screen.getByRole('searchbox', { name: 'Filter packages' })).toHaveValue('');
+  });
+
   it('puts the failed hosts of 40 on top, selects the first and counts each filter', async () => {
     const user = userEvent.setup();
     const hosts = Array.from({ length: 40 }, (_, n) => {
