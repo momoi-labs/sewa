@@ -12,30 +12,46 @@ import {
   Button,
   Card,
   CardContent,
-  Disclosure,
+  Dot,
   LogView,
   LogViewLine,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  Progress,
+  Search,
   Skeleton,
   Spinner,
+  StatusBadge,
   StepList,
+  Steps,
   type StepItem,
+  type StepsItem,
   useToast,
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { ApiFailure, approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
-import { ErrorAlert, errorCode } from '../components/ErrorAlert';
+import { ErrorAlert } from '../components/ErrorAlert';
 import { PasskeyError } from '../components/PasskeyError';
-import { formatClock, formatDateTime } from '../format';
+import { formatClock, formatDateTime, osNames } from '../format';
 import { signApproval } from '../webauthn';
 import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
-import { finishedAt, planState, plural, sameTargets, tally } from './sync';
+import {
+  activity,
+  filterOf,
+  finishedAt,
+  type HostFilter,
+  hostFilters,
+  orderHosts,
+  planState,
+  plural,
+  sameTargets,
+  tally,
+} from './sync';
 
 const route = getRouteApi('/sync/$syncId');
 
@@ -106,7 +122,15 @@ function Run({ sync }: { sync: Sync }) {
   const offline = states.filter((state) => state === 'offline').length;
   const failedPlans = states.filter((state) => state === 'failed').length;
   const allInSync = nothing && inSync === states.length;
-  const approval = sync.approvals[0];
+
+  if (signed) {
+    return (
+      <div className="stack">
+        <Finished sync={sync} nothing={nothing} allInSync={allInSync} />
+        <SignedRun sync={sync} sign={sign} plans={plans} />
+      </div>
+    );
+  }
 
   const steps: StepItem[] = [
     {
@@ -128,19 +152,15 @@ function Run({ sync }: { sync: Sync }) {
       ]
         .filter(Boolean)
         .join(', '),
-      detail: signed || allInSync ? undefined : <PlanByPackage hosts={sync.hosts} />,
+      detail: allInSync ? undefined : <PlanByPackage hosts={sync.hosts} />,
     },
     {
       key: 'sign',
       label: 'Sign',
-      state: signed ? 'done' : nothing ? 'skipped' : sync.status === 'ready' ? 'running' : 'pending',
-      meta: approval
-        ? `${approval.by}, ${approval.passkey}, ${formatClock(approval.created_at)}`
-        : nothing
-          ? 'Nothing to sign'
-          : undefined,
+      state: nothing ? 'skipped' : sync.status === 'ready' ? 'running' : 'pending',
+      meta: nothing ? 'Nothing to sign' : undefined,
       detail:
-        !signed && sync.status === 'ready' ? (
+        sync.status === 'ready' ? (
           <div className="stack-sm">
             <p>
               Your passkey signs the {plural(toSign.length, 'plan')} above. Each agent checks the signature and
@@ -163,38 +183,7 @@ function Run({ sync }: { sync: Sync }) {
           </div>
         ) : undefined,
     },
-    {
-      key: 'apply',
-      label: 'Apply',
-      state: !signed
-        ? nothing
-          ? 'skipped'
-          : 'pending'
-        : hosts.waiting.length > 0
-          ? 'running'
-          : hosts.failed.length > 0
-            ? 'failed'
-            : 'done',
-      meta: signed
-        ? [
-            hosts.applied.length && `${hosts.applied.length} applied`,
-            hosts.waiting.length && `${hosts.waiting.length} waiting`,
-            hosts.failed.length && `${hosts.failed.length} failed`,
-          ]
-            .filter(Boolean)
-            .join(', ')
-        : undefined,
-      detail: signed ? (
-        <div className="stack-sm">
-          <p className="muted">Each host applies its own plan. Its steps are below.</p>
-          {hosts.waiting.length > 0 && (
-            <p className="muted">
-              A waiting host picks up the change on its next check-in, within 30 seconds.
-            </p>
-          )}
-        </div>
-      ) : undefined,
-    },
+    { key: 'apply', label: 'Apply', state: nothing ? 'skipped' : 'pending' },
   ];
 
   return (
@@ -205,17 +194,277 @@ function Run({ sync }: { sync: Sync }) {
           <StepList label="Sync progress" steps={steps} />
         </CardContent>
       </Card>
-      {signed && (
-        <section className="stack-sm">
-          <h2 className="t-caps">Hosts</h2>
+    </div>
+  );
+}
+
+function useNarrow() {
+  const query = '(max-width: 719px)';
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setNarrow(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return narrow;
+}
+
+const stepLabel: Record<SyncHost['step'], string> = {
+  picked: 'Not signed',
+  in_sync: 'In sync',
+  skipped: 'Skipped',
+  waiting: 'Waiting',
+  applied: 'Applied',
+  failed: 'Failed',
+  replan: 'Plan changed',
+};
+
+function stepTone(step: SyncHost['step']): 'success' | 'danger' | 'neutral' {
+  if (step === 'applied') return 'success';
+  return step === 'failed' || step === 'replan' ? 'danger' : 'neutral';
+}
+
+function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof useSign>; plans: number }) {
+  const narrow = useNarrow();
+  const hosts = tally(sync);
+  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState<ReadonlySet<HostFilter>>(new Set());
+  const [selected, setSelected] = useState<string | null>(null);
+  const typed = query.trim().toLowerCase();
+  const visible = orderHosts(sync.hosts).filter((host) => {
+    const filter = filterOf(host.step);
+    return (
+      host.name.toLowerCase().includes(typed) && (filters.size === 0 || (filter !== null && filters.has(filter)))
+    );
+  });
+  const current = visible.find((host) => host.id === selected) ?? visible[0];
+  useEffect(() => {
+    if (narrow && selected) {
+      document.querySelector('.host-row[aria-current="true"]')?.scrollIntoView?.({ block: 'start' });
+    }
+  }, [narrow, selected]);
+  const counts: Record<HostFilter, number> = {
+    failed: hosts.failed.length,
+    waiting: hosts.waiting.length,
+    applied: hosts.applied.length,
+    in_sync: hosts.inSync.length,
+    skipped: hosts.skipped.length,
+  };
+  const total = hosts.waiting.length + hosts.applied.length + hosts.failed.length;
+  const finished = hosts.applied.length + hosts.failed.length;
+  const approval = sync.approvals[0]!;
+  const applyStatus: StepsItem['status'] = hosts.waiting.length > 0 ? undefined : hosts.failed.length > 0 ? 'error' : 'completed';
+  const steps: StepsItem[] = [
+    { id: 'hosts', label: 'Pick hosts', status: 'completed', description: plural(sync.hosts.length, 'host') },
+    { id: 'plans', label: 'Plans', status: 'completed', description: plural(plans, 'plan') },
+    { id: 'sign', label: 'Sign', status: 'completed', description: formatClock(approval.created_at) },
+    {
+      id: 'apply',
+      label: 'Apply',
+      status: applyStatus,
+      description: hosts.failed.length > 0 ? `${hosts.failed.length} failed` : undefined,
+    },
+  ];
+  const toggle = (key: HostFilter) => {
+    const next = new Set(filters);
+    if (!next.delete(key)) next.add(key);
+    setFilters(next);
+  };
+  const detail = current && <HostDetail host={current} sign={sign} />;
+
+  return (
+    <>
+      <Card>
+        <CardContent className="stack-sm">
+          <Steps
+            label="Sync progress"
+            items={steps}
+            current={hosts.waiting.length > 0 ? 'apply' : null}
+          />
+          {total > 0 && (
+            <Progress
+              label="Apply progress"
+              value={finished}
+              max={total}
+              valueText={`${finished} of ${plural(total, 'host')} finished`}
+            />
+          )}
+          <div className="run-chips" role="group" aria-label="Filter hosts by status">
+            {hostFilters.map((filter) => (
+              <Button
+                key={filter.key}
+                type="button"
+                size="sm"
+                variant={filters.has(filter.key) ? 'primary' : 'default'}
+                aria-pressed={filters.has(filter.key)}
+                onClick={() => toggle(filter.key)}
+              >
+                {filter.label} <span className="mono">{counts[filter.key]}</span>
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      <div className="run-split">
+        <Card>
+          <CardContent className="stack-sm">
+            <Search
+              aria-label="Search hosts"
+              placeholder="Search hosts"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            {visible.length === 0 ? (
+              <div className="stack-sm" role="status">
+                <p className="muted">No host matches.</p>
+                <div className="row-wrap">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      setQuery('');
+                      setFilters(new Set());
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <ul className="host-list" aria-label="Hosts">
+                {visible.map((host) => (
+                  <li key={host.id}>
+                    <button
+                      type="button"
+                      className="host-row"
+                      aria-current={host.id === current?.id ? 'true' : undefined}
+                      onClick={() => setSelected(host.id)}
+                    >
+                      <Dot variant={stepTone(host.step)} aria-hidden="true" />
+                      <span className="host-row-name truncate" title={host.name}>
+                        {host.name}
+                      </span>
+                      <span className="host-row-state">{stepLabel[host.step]}</span>
+                    </button>
+                    {narrow && host.id === current?.id && detail}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+        {!narrow && detail && (
           <Card>
-            <CardContent>
-              <Apply sync={sync} sign={sign} />
-            </CardContent>
+            <CardContent>{detail}</CardContent>
           </Card>
+        )}
+      </div>
+      <ActivityFeed sync={sync} />
+    </>
+  );
+}
+
+function logLines(log: string) {
+  return log.split('\n').map((line, index) => <LogViewLine key={index}>{line}</LogViewLine>);
+}
+
+function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof useSign> }) {
+  const retrying = sign.isPending ? sign.variables?.[0] : undefined;
+  const failed = host.step === 'failed' || host.step === 'replan';
+  const at = host.result?.received_at ?? host.result?.reported_at;
+  const log = host.result?.log;
+  const showPlan = (failed || host.step === 'waiting') && planState(host) === 'changes';
+  const when = [host.os && osNames[host.os], at && formatClock(at)].filter(Boolean).join(', ');
+
+  return (
+    <section className="host-detail stack-sm" aria-label={`${host.name} detail`}>
+      <div className="between host-detail-head">
+        <div className="host-detail-title">
+          <h2 className="host-detail-name">{host.name}</h2>
+          {when && <p className="muted">{when}</p>}
+        </div>
+        <StatusBadge tone={stepTone(host.step)}>{stepLabel[host.step]}</StatusBadge>
+      </div>
+      {host.step === 'replan' && (
+        <Alert variant="warning">
+          <AlertContent>
+            <AlertTitle>Plan changed, nothing ran</AlertTitle>
+            <AlertDescription>Its plan changed before it applied. Retry signs the new plan below.</AlertDescription>
+          </AlertContent>
+        </Alert>
+      )}
+      {host.step === 'waiting' && (
+        <p className="muted">
+          {host.status === 'connected'
+            ? 'A waiting host picks up the change on its next check-in, within 30 seconds.'
+            : host.status === 'disabled'
+              ? 'This host is disabled, so it does not apply the change. Enable it to continue.'
+              : `This host is ${host.status === 'disconnected' ? 'offline' : 'not connected yet'}, so nothing happens yet. It applies the change on its first check-in after it connects.`}
+        </p>
+      )}
+      {host.step === 'skipped' && (
+        <p className="muted">Offline or no plan when the sync was signed, so nothing ran. It catches up when you sync it again.</p>
+      )}
+      {host.step === 'in_sync' && <p className="muted">Its plan has nothing to change.</p>}
+      {showPlan && (
+        <section className="stack-sm">
+          <h3 className="t-caps">Plan</h3>
+          <PlanByPackage hosts={[host]} />
         </section>
       )}
-    </div>
+      {log && (
+        <section className="stack-sm">
+          <h3 className="t-caps">Log</h3>
+          {log.startsWith('…') && <p className="muted">The controller keeps only the end of a long log.</p>}
+          <LogView className="apply-log" aria-label={`${host.name} apply log`}>
+            {logLines(log)}
+          </LogView>
+        </section>
+      )}
+      {sign.isError && sign.variables?.[0] === host.id && <PasskeyError error={sign.error} thing="sync" />}
+      {failed && (
+        <div className="row-wrap">
+          <Button
+            type="button"
+            size="sm"
+            aria-busy={retrying === host.id}
+            disabled={sign.isPending && retrying !== host.id}
+            onClick={() => {
+              if (!sign.isPending) sign.mutate([host.id]);
+            }}
+          >
+            {retrying === host.id && <Spinner size="sm" />}
+            Retry {host.name}
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ActivityFeed({ sync }: { sync: Sync }) {
+  const events = activity(sync);
+  return (
+    <Card>
+      <CardContent className="stack-sm">
+        <h2 className="t-caps">Activity</h2>
+        <ol className="activity-feed" aria-label="Activity">
+          {events.map((event) => (
+            <li key={event.key}>
+              <time className="mono muted" dateTime={event.at}>
+                {formatClock(event.at)}
+              </time>
+              <Dot variant={event.kind === 'failed' ? 'danger' : 'success'} aria-hidden="true" />
+              <span className="activity-text">
+                <strong>{event.who}</strong> {event.what}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -306,93 +555,6 @@ function PickedHosts({ hosts }: { hosts: SyncHost[] }) {
         </Button>
       </p>
       {open && <p className="muted">{hosts.map((host) => host.name).sort(byName).join(', ')}.</p>}
-    </div>
-  );
-}
-
-function hostStep(host: SyncHost): StepItem['state'] {
-  switch (host.step) {
-    case 'applied':
-      return 'done';
-    case 'waiting':
-      return 'running';
-    case 'failed':
-    case 'replan':
-      return 'failed';
-    case 'in_sync':
-    case 'skipped':
-      return 'skipped';
-    default:
-      return 'pending';
-  }
-}
-
-const hostMeta: Record<SyncHost['step'], string> = {
-  picked: 'Not signed',
-  in_sync: 'In sync',
-  skipped: 'Offline or no plan',
-  waiting: 'Applying',
-  applied: 'Applied',
-  failed: 'Failed',
-  replan: 'Plan changed, nothing ran',
-};
-
-function Apply({ sync, sign }: { sync: Sync; sign: ReturnType<typeof useSign> }) {
-  const retrying = sign.isPending ? sign.variables?.[0] : undefined;
-  const steps: StepItem[] = sync.hosts.map((host) => {
-    const failed = host.step === 'failed' || host.step === 'replan';
-    const at = host.result?.received_at ?? host.result?.reported_at;
-    return {
-      key: host.id,
-      label: host.name,
-      state: hostStep(host),
-      meta: at && host.step !== 'waiting' ? `${hostMeta[host.step]}, ${formatClock(at)}` : hostMeta[host.step],
-      detail: failed ? (
-        <div className="stack-sm">
-          {host.step === 'replan' && (
-            <p>Its plan changed before it applied. Sign the new plan to apply it.</p>
-          )}
-          {host.result?.log && (
-            <LogView className="apply-log" aria-label={`${host.name} apply log`}>
-              {host.result.log.split('\n').map((line, index) => (
-                <LogViewLine key={index}>{line}</LogViewLine>
-              ))}
-            </LogView>
-          )}
-          {planState(host) === 'changes' && <PlanByPackage hosts={[host]} />}
-          {sign.isError && sign.variables?.[0] === host.id && <PasskeyError error={sign.error} thing="sync" />}
-          <div className="row-wrap">
-            <Button
-              type="button"
-              size="sm"
-              aria-busy={retrying === host.id}
-              disabled={sign.isPending && retrying !== host.id}
-              onClick={() => {
-                if (!sign.isPending) sign.mutate([host.id]);
-              }}
-            >
-              {retrying === host.id && <Spinner size="sm" />}
-              Retry {host.name}
-            </Button>
-          </div>
-        </div>
-      ) : host.step === 'applied' && host.result?.log ? (
-        <Disclosure summary="Apply log">
-          <LogView className="apply-log" aria-label={`${host.name} apply log`}>
-            {host.result.log.split('\n').map((line, index) => (
-              <LogViewLine key={index}>{line}</LogViewLine>
-            ))}
-          </LogView>
-        </Disclosure>
-      ) : undefined,
-    };
-  });
-  return (
-    <div className="stack-sm">
-      {sign.isError && errorCode(sign.error) === 'nothing_to_approve' && (
-        <ErrorAlert error={sign.error} thing="sync" />
-      )}
-      <StepList label="Hosts" steps={steps} />
     </div>
   );
 }
