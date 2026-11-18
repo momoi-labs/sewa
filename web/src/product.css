@@ -5,31 +5,45 @@
    product; this shows about a dozen lines and scrolls the rest. */
 .apply-log { max-block-size: calc(var(--spacing-4xl) * 5); }
 
-/* Header C: the brand slot is tinted with the accent surface and shows the
-   instance address under the name. On a phone the drawer shows it.
-   The sidebar header and the top bar share one bar height, so their bottoms
-   line up: border-box, no block padding, content centered. */
-.sidebar-header { background: var(--color-accent-surface); }
-.app-shell { --bar-height: calc(var(--size-control-lg) + var(--spacing-lg) + var(--spacing-xs)); }
-.sidebar-header,
-.app-shell > :is(main, [data-slot="app-shell-main"]) > .topbar {
-  box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
-}
-.sidebar-header { align-content: center; }
-/* Kiso 0.31.1 gives the theme row no padding; the host sets the inset. The
-   top bar keeps the 8px the row had before, as Kiso does in the sidebar footer. */
+.app-shell { --bar-height: var(--app-shell-bar-height); --console-stripe: 3px; }
 .topbar .theme-row { padding: var(--spacing-sm); }
-/* A line under the brand, like the top bar's, and the page body's gap
-   above the first nav item, so it does not touch the line. */
-.sidebar-header { border-block-end: 1px solid var(--color-border); }
-.sidebar-body { padding-block-start: var(--spacing-sm); }
-.brand-slot { gap: var(--spacing-sm); color: var(--color-foreground); text-decoration: none; }
-.brand-slot .sewa-mark { height: var(--size-control-lg); }
-.brand-slot-text { min-width: 0; line-height: 1.15; display: grid; }
-.brand-slot-name { font-size: var(--type-size-h3); font-weight: var(--type-weight-bold); }
-.brand-slot-site {
+.brand-symbol { display: block; width: var(--size-control-sm); height: var(--size-control-sm); flex: none; }
+.brand-symbol img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.brand-lockup { display: block; }
+.brand-lockup img { display: block; height: var(--brand-lockup-height); width: auto; max-width: 100%; object-fit: contain; object-position: left; }
+.brand-on-dark { display: none !important; }
+:root[data-theme="dark"] .brand-on-light { display: none !important; }
+:root[data-theme="dark"] .brand-on-dark { display: block !important; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .brand-on-light { display: none !important; }
+  :root:not([data-theme]) .brand-on-dark { display: block !important; }
+}
+.console-brand { --brand-lockup-height: calc(var(--size-control-sm) * 1283 / 1469); display: block; min-width: 0; color: var(--color-foreground); text-decoration: none; }
+.console-brand-full { display: grid; min-width: 0; line-height: 1.15; }
+.console-brand-compact { display: none; }
+.console-dns {
   font-family: var(--font-mono); font-size: var(--type-size-metadata); color: var(--color-muted-foreground);
   text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+}
+.app-shell .sidebar-header { background: var(--color-accent-surface); box-shadow: inset 0 calc(-1 * var(--console-stripe)) 0 var(--color-primary); }
+.app-shell[data-shell-layout] {
+  --app-shell-brand-inset: calc((var(--size-touch-min) + 2 * var(--spacing-md) - 1px - var(--size-control-sm)) / 2);
+}
+.app-shell[data-shell-layout] > .sidebar > .sidebar-header,
+.app-shell[data-shell-layout] > .sidebar[data-collapsed="true"] > .sidebar-header-collapsible { padding-block-end: var(--console-stripe); }
+@media (min-width: 1024px) {
+  .app-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
+  .app-shell > .sidebar > .sidebar-header .console-dns { display: none; }
+}
+@media (max-width: 1023px) {
+  .app-shell[data-shell-layout] > :is(main, [data-slot="app-shell-main"]) > .topbar {
+    box-sizing: border-box; block-size: var(--bar-height); min-block-size: 0; padding-block: 0;
+  }
+}
+.app-shell-phone-brand .console-brand-full { display: none; }
+.app-shell-phone-brand .console-brand-compact { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; }
+@media not all and (max-width: 720px) {
+  .console-brand-compact .console-dns { display: none; }
 }
 
 /* Numbered steps of a configuration form, as in the role page. The number

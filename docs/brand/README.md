@@ -45,11 +45,11 @@ background.
 
 ## In the web app
 
-- The shell's brand draws the emblem with `SewaMark`, 32 px high, beside the
-  name. `web/src/components/SewaMark.css` gives it the colors above for the
-  app's light and dark themes. `docs/kiso.md` records why it replaces Kiso's
-  BrandMark.
-- `SewaMark` holds the paths of `mark.svg`. Keep the two the same.
+- The shell's brand draws the emblem with `BrandSymbol` and `Lockup`
+  (`web/src/components/Logo.tsx`). They load `mark.svg`, `mark-dark.svg`,
+  `lockup.svg` and `lockup-dark.svg` from `web/src/brand/`. Keep those copies
+  the same as the files here. `docs/kiso.md` records the sizes and why the
+  emblem replaces Kiso's BrandMark.
 - `web/public/favicon.svg` is the same emblem in a square viewBox. The
   ivory halo appears when the system uses a dark theme.
 - `ErrorPage` shows `error-403`, `error-500`, or `error-offline` above the status code, a
