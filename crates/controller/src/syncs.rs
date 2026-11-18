@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sewa_approval::{Approval, Assertion, HostPlan, Outcome, Rejection, Signed};
+use sewa_approval::{Approval, Assertion, HostPlan, Outcome, Progress, Rejection, Signed};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -81,6 +81,20 @@ pub struct HostResult {
     pub received_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StepEntry {
+    pub step: String,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApplyProgress {
+    pub step: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub steps: Vec<StepEntry>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SyncHost {
     pub id: Uuid,
@@ -92,6 +106,7 @@ pub struct SyncHost {
     pub step: String,
     pub plan: Option<Plan>,
     pub result: Option<HostResult>,
+    pub progress: Option<ApplyProgress>,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,7 +133,10 @@ fn ready(plan: Option<&Plan>) -> bool {
 }
 
 fn sync_status(hosts: &[SyncHost]) -> &'static str {
-    if hosts.iter().any(|host| host.step == "waiting") {
+    if hosts
+        .iter()
+        .any(|host| matches!(host.step.as_str(), "waiting" | "applying"))
+    {
         return "applying";
     }
     let picked = hosts.iter().filter(|host| host.step == "picked");
@@ -149,6 +167,10 @@ type SyncHostRow = (
     Option<String>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    sqlx::types::Json<Vec<StepEntry>>,
 );
 
 pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
@@ -160,7 +182,8 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
     let (created_at, created_by) = row.ok_or_else(not_found)?;
     let rows: Vec<SyncHostRow> = sqlx::query_as(
         "SELECT h.id, h.name, h.os, h.disabled_at, h.enrolled_at, h.last_seen_at,
-                s.status, s.plan_hash, s.log, s.reported_at, s.received_at
+                s.status, s.plan_hash, s.log, s.reported_at, s.received_at,
+                s.step, s.started_at, s.progress_at, s.steps
          FROM sync_hosts s JOIN hosts h ON h.id = s.host_id
          WHERE s.sync_id = $1 ORDER BY h.name",
     )
@@ -183,6 +206,10 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
             log,
             reported,
             received,
+            apply_step,
+            started_at,
+            progress_at,
+            steps,
         ) = row;
         let expected = desired::hash(&desired::host_config(host, &state));
         let plan_row: Option<PlanRow> = sqlx::query_as(SELECT_PLAN)
@@ -190,7 +217,10 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
             .bind(desired::CURRENT)
             .fetch_optional(&mut *connection)
             .await?;
-        let signed = matches!(step.as_str(), "waiting" | "applied" | "failed" | "replan");
+        let signed = matches!(
+            step.as_str(),
+            "waiting" | "applying" | "applied" | "failed" | "replan"
+        );
         hosts.push(SyncHost {
             id: host,
             name,
@@ -210,6 +240,12 @@ pub async fn load(connection: &mut PgConnection, id: Uuid) -> ApiResult<Sync> {
                 received_at: reported
                     .zip(received)
                     .and_then(|(reported, received)| status::late(reported, received)),
+            }),
+            progress: started_at.map(|started_at| ApplyProgress {
+                step: apply_step,
+                started_at,
+                updated_at: progress_at,
+                steps: steps.0,
             }),
             step,
         });
@@ -519,7 +555,8 @@ pub async fn approve(
         for host in &targets.approval.hosts {
             sqlx::query(
                 "UPDATE sync_hosts SET status = 'waiting', approval_id = $3, plan_hash = $4,
-                     log = NULL, reported_at = NULL, received_at = NULL
+                     log = NULL, reported_at = NULL, received_at = NULL,
+                     step = NULL, started_at = NULL, progress_at = NULL, steps = '[]'
                  WHERE sync_id = $1 AND host_id = $2",
             )
             .bind(id)
@@ -583,14 +620,7 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
             return Ok(());
         }
     };
-    let mut log = outcome.log.replace('\0', "");
-    if log.len() > LOG_LIMIT {
-        let mut start = log.len() - LOG_LIMIT;
-        while !log.is_char_boundary(start) {
-            start += 1;
-        }
-        log = format!("…{}", &log[start..]);
-    }
+    let log = tail(&outcome.log);
     let received = Utc::now();
     let reported = status::reported_at(outcome.at, received);
     let mut transaction = pool.begin().await?;
@@ -600,7 +630,8 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
         .await?;
     let updated = sqlx::query(
         "UPDATE sync_hosts SET status = $4, log = $5, reported_at = $6, received_at = $7
-         WHERE sync_id = $1 AND host_id = $2 AND approval_id = $3 AND status = 'waiting'",
+         WHERE sync_id = $1 AND host_id = $2 AND approval_id = $3
+             AND status IN ('waiting', 'applying')",
     )
     .bind(outcome.change_id)
     .bind(host)
@@ -632,6 +663,57 @@ pub async fn save_outcome(pool: &sqlx::PgPool, host: Uuid, outcome: &Outcome) ->
         )
         .await?;
     }
+    transaction.commit().await
+}
+
+fn tail(log: &str) -> String {
+    let mut log = log.replace('\0', "");
+    if log.len() > LOG_LIMIT {
+        let mut start = log.len() - LOG_LIMIT;
+        while !log.is_char_boundary(start) {
+            start += 1;
+        }
+        log = format!("…{}", &log[start..]);
+    }
+    log
+}
+
+pub async fn save_progress(
+    pool: &sqlx::PgPool,
+    host: Uuid,
+    progress: &Progress,
+) -> sqlx::Result<()> {
+    if !matches!(progress.step.as_str(), "native" | "mise") {
+        tracing::warn!(host = %host, step = progress.step, "an unknown apply step");
+        return Ok(());
+    }
+    let received = Utc::now();
+    let at = status::reported_at(Some(progress.at), received);
+    let started = status::reported_at(Some(progress.started_at), received);
+    let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT 1 FROM hosts WHERE id = $1 FOR UPDATE")
+        .bind(host)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "UPDATE sync_hosts SET status = 'applying', step = $4, log = $5,
+             started_at = coalesce(started_at, $6), progress_at = $7,
+             steps = CASE WHEN step IS DISTINCT FROM $4
+                 THEN steps || jsonb_build_array(jsonb_build_object('step', $4::text, 'at', $7::timestamptz))
+                 ELSE steps END
+         WHERE sync_id = $1 AND host_id = $2 AND approval_id = $3
+             AND status IN ('waiting', 'applying')
+             AND (progress_at IS NULL OR progress_at <= $7)",
+    )
+    .bind(progress.change_id)
+    .bind(host)
+    .bind(progress.approval_id)
+    .bind(&progress.step)
+    .bind(tail(&progress.log))
+    .bind(started)
+    .bind(at)
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await
 }
 
@@ -716,7 +798,7 @@ pub async fn open_steps(
     host: Uuid,
 ) -> sqlx::Result<HashMap<Uuid, String>> {
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT sync_id, status FROM sync_hosts WHERE host_id = $1 AND status IN ('picked', 'waiting')",
+        "SELECT sync_id, status FROM sync_hosts WHERE host_id = $1 AND status IN ('picked', 'waiting', 'applying')",
     )
     .bind(host)
     .fetch_all(connection)

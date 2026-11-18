@@ -339,7 +339,7 @@ pub async fn disable(
     sqlx::query(
         "UPDATE sync_hosts SET status = 'failed', reported_at = now(), received_at = now(),
              log = 'The host was disabled before its agent reported.'
-         WHERE host_id = $1 AND status = 'waiting'",
+         WHERE host_id = $1 AND status IN ('waiting', 'applying')",
     )
     .bind(id)
     .execute(&mut *transaction)

@@ -115,7 +115,7 @@ controller:
   there is no connection to drop: the host stops being `connected` at once;
 - expires the install tokens that are unused, so `/v1/enroll` refuses them;
 - takes the host out of the syncs in progress. A host in step `picked` goes
-  to `skipped`. A host in step `waiting` (signed, not reported) goes to
+  to `skipped`. A host in step `waiting` or `applying` (signed, not reported) goes to
   `failed`, with a log that says it was disabled, and its approval is never
   delivered. Finished steps stay;
 - records `host.disabled`, with `data.by` and `data.revoked_credentials`.
@@ -312,11 +312,13 @@ A host's `step` in a sync is:
 - `skipped`: at the signature, it had no plan to sign: it was offline,
   had not planned its config yet, or its plan failed.
 - `waiting`: signed. Its agent has not reported yet.
+- `applying`: its agent checked the approval and runs the apply. It
+  reports its progress until it reports the result.
 - `applied`, `failed`, or `replan` (the plan changed before the agent
   applied it, so nothing ran): what the agent reported. A `failed` or
   `replan` host can be signed again.
 
-The sync's `status` is `applying` while a host waits, `planning` while a
+The sync's `status` is `applying` while a host is `waiting` or `applying`, `planning` while a
 picked, connected host has no plan of its config, `ready` while a picked
 host has changes to sign, and `done` otherwise.
 
@@ -358,14 +360,24 @@ Returns the edits since the last sync started, oldest first, at most 200:
                         "plan": {}, "error": null, "reported_at": "…", "received_at": null,
                         "stale": false },
               "result": { "plan_hash": "…", "log": "…", "reported_at": "…",
-                          "received_at": null } }],
+                          "received_at": null },
+              "progress": { "step": "mise", "started_at": "…", "updated_at": "…",
+                            "steps": [{ "step": "native", "at": "…" },
+                                      { "step": "mise", "at": "…" }] } }],
   "approvals": [{ "id": "…", "by": "…", "passkey": "Laptop", "created_at": "…", "host_count": 2 }] }
 ```
 
 `plan` is null until the agent plans. `stale` is true when the plan is of
 an older config, so a new plan is on its way. `result` is null until the
 host is signed. `log` is the tail of the apply, at most 64 KiB.
-`reported_at` and `received_at` work as in a plan.
+`reported_at` and `received_at` work as in a plan. While the host is
+`applying`, `log` is the output so far and `reported_at` is null.
+
+`progress` is null until the agent reports its first progress, and stays
+after the result. `step` is `native` or `mise`, `started_at` is when the
+apply started, `updated_at` is the time of the last progress, and `steps`
+lists each step once, in order, with when it started. A retry clears it.
+An agent that sends no progress goes from `waiting` to its result.
 
 ### `POST /api/syncs/{id}/approval`
 
@@ -669,6 +681,22 @@ nothing. It answers with type `result`:
 `log` says why), or `replan` (the config or the plan changed; nothing ran).
 There is no rollback. One host failing does not stop the others. `at` is
 when the agent finished, as in a plan.
+
+While it applies, the agent sends type `progress` at each step, then at
+most every 5 seconds while the output grows, and at least every 20
+seconds, so the host stays `connected`:
+
+```json
+{ "approval_id": "…", "change_id": "…", "step": "mise", "started_at": 1767261600000,
+  "at": 1767261630000, "log": "…" }
+```
+
+`step` is `native` or `mise`. `log` is the output so far, at most 32 KiB.
+Progress is sent once and never queued: a lost one is replaced by the next.
+The controller keeps a progress only while the host is `waiting` or
+`applying` and only if it is not older than the last one it kept, so a
+progress after the result changes nothing. A controller that does not know
+the type ignores it.
 
 #### Offline
 
