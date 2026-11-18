@@ -3,12 +3,6 @@ import {
   AlertContent,
   AlertDescription,
   AlertTitle,
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
   Card,
   EmptyState,
   EmptyStateDescription,
@@ -32,7 +26,7 @@ import {
   TabsTrigger,
 } from '@momoi-labs/kiso-react';
 import { useQuery } from '@tanstack/react-query';
-import { getRouteApi, Link } from '@tanstack/react-router';
+import { getRouteApi } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 
 import { eventsQuery, type Host, type HostEvent, hostQuery, hostStateQuery } from '../api';
@@ -55,19 +49,6 @@ export function HostPage() {
 
   return (
     <>
-      <Breadcrumb aria-label="Breadcrumb">
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbLink asChild>
-              <Link to="/">Hosts</Link>
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{host.data?.name ?? '…'}</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
       {host.isError && !host.data ? (
         <ErrorAlert error={host.error} onRetry={() => void host.refetch()} />
       ) : (

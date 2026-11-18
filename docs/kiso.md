@@ -22,7 +22,8 @@ contract disagree, the contract wins and this file has a bug.
 
 | Component | Use |
 | --- | --- |
-| `Shell` | The application shell (`shellLayout`, `collapsible`, `togglePlacement="header"`) with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand is the sewa lockup. The instance address from `GET /api/instance` shows under it below 1024 px only. |
+| `Shell` | The application shell (`shellLayout`, `collapsible`, `togglePlacement="header"`) with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand is the sewa lockup. The page's host (`location.host`, so a non-default port shows) shows under it below 1024 px, and in the header breadcrumb as its root. |
+| `HeaderBreadcrumb` | The path in the shell header: address, list page, record name. The record name comes from the same queries as the page, so it shares their cache. |
 | `BrandSymbol`, `Lockup` | The sewa cat in the shell's brand: the symbol in the rail and the phone header, the lockup in the open sidebar and the drawer. Each renders the light and the dark drawing, and CSS shows the one for the theme. The files are in `web/src/brand/`, copies of `docs/brand/`. |
 | `HostStatusBadge` | A host's status: waiting, connected, disconnected, or disabled. Only the disconnected dot pulses. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
@@ -117,10 +118,19 @@ contract disagree, the contract wins and this file has a bug.
   `.sidebar-expanded-content` visible in the rail or toggles on hover.
 - The sidebar is `collapsible`, with the toggle in the header. The collapse
   button is new, and the rail keeps the symbol.
-- sewa has no login page, so the login lockup rule does not apply. It has no
-  breadcrumb root for the address, so the address is not shown in the open
-  sidebar at 1024 px and above. It shows only below 1024 px. The favicon is
-  the cat, as before. The recipe's PNG app icons are not added.
+- The shell header has the breadcrumb of the recipe (`HeaderBreadcrumb`),
+  after the sidebar toggle: the page's host from `location.host`, with the
+  port when it is not the default one for the scheme (mono, small,
+  truncating, links to the app root), the list page, and on a host, role or sync run the
+  record's name as `BreadcrumbPage`. It never wraps (`flex-wrap: nowrap`, the first and last item
+  can shrink, the last one ellipsizes). Below 720 px only the current page
+  shows, and the address stays next to the symbol in the phone header. From
+  720 px the address is in the breadcrumb only. At 1024 px and above the
+  sidebar bar has the lockup alone. The host and role pages no longer render
+  their own breadcrumb. The sync run page still does, and `product.css`
+  hides any breadcrumb inside `.page`, so the header is the only path.
+- sewa has no login page, so the login lockup rule does not apply. The
+  favicon is the cat, as before. The recipe's PNG app icons are not added.
 - `ErrorPage` is a full page: the `hatch` fills the viewport and one
   column (`.empty` with Kiso's title, description and actions) holds a brand
   illustration, about 192 px high. It uses that composition for 5xx errors

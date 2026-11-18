@@ -1,10 +1,9 @@
 import { ApplicationShell, type ApplicationShellGroup, ThemeSelector } from '@momoi-labs/kiso-react';
-import { useQuery } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { KeyRound, Layers, RefreshCw, Server } from 'lucide-react';
 import { useState } from 'react';
 
-import { instanceQuery } from '../api';
+import { HeaderBreadcrumb } from './HeaderBreadcrumb';
 import { BrandSymbol, Lockup } from './Logo';
 import { applyTheme, savedTheme, type Theme } from './theme';
 
@@ -12,8 +11,7 @@ export function Shell() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [theme, setTheme] = useState<Theme>(savedTheme);
-  const instance = useQuery({ ...instanceQuery, throwOnError: false });
-  const site = instance.data && address(instance.data.address);
+  const site = window.location.host;
 
   const navigation: ApplicationShellGroup[] = [
     {
@@ -60,11 +58,11 @@ export function Shell() {
         <Link to="/" className="console-brand" aria-label="sewa, home">
           <span className="console-brand-full">
             <Lockup />
-            {site && <span className="console-dns">{site}</span>}
+            <span className="console-dns">{site}</span>
           </span>
           <span className="console-brand-compact">
             <BrandSymbol />
-            {site && <span className="console-dns">{site}</span>}
+            <span className="console-dns">{site}</span>
           </span>
         </Link>
       }
@@ -72,6 +70,7 @@ export function Shell() {
       navigationLabel="Main"
       header={
         <>
+          <HeaderBreadcrumb site={site} />
           <div className="grow" />
           <ThemeSelector
             theme={theme}
@@ -89,8 +88,4 @@ export function Shell() {
       </div>
     </ApplicationShell>
   );
-}
-
-function address(url: string): string {
-  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }

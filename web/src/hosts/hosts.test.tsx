@@ -160,6 +160,20 @@ describe('hosts', () => {
     expect(calls.filter((call) => call.method === 'POST').at(-1)?.body).toEqual({ name: 'mac-1' });
   });
 
+  it('shows the instance, the list and the host in the header breadcrumb', async () => {
+    mockApi({
+      [`GET /api/hosts/${connected.id}`]: { status: 200, body: connected },
+      [`GET /api/hosts/${connected.id}/events`]: { status: 200, body: [] },
+    });
+    expect(window.location.port).not.toBe('');
+    renderRoute(`/hosts/${connected.id}`);
+    const trail = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+    expect(await within(trail).findByRole('link', { name: window.location.host })).toHaveAttribute('href', '/');
+    expect(within(trail).getByRole('link', { name: 'Hosts' })).toHaveAttribute('href', '/');
+    expect(await within(trail).findByText('build-1')).toHaveAttribute('aria-current', 'page');
+    expect(screen.getAllByRole('navigation', { name: 'Breadcrumb' })).toHaveLength(1);
+  });
+
   it('shows a host with its events, newest first', async () => {
     mockApi({
       [`GET /api/hosts/${connected.id}`]: { status: 200, body: connected },
