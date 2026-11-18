@@ -3,7 +3,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use sewa_approval::{Outcome, Signed};
+use sewa_approval::{Outcome, Progress, Signed};
 use uuid::Uuid;
 
 use crate::opamp::proto::{
@@ -22,6 +22,8 @@ const PLANNED: &str = "planned.json";
 const ANSWERED: &str = "answered.json";
 const APPLYING: &str = "applying.json";
 const ANSWERED_LIMIT: usize = 256;
+const PROGRESS_EVERY: Duration = Duration::from_secs(5);
+const PROGRESS_QUIET: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Applying {
@@ -117,18 +119,22 @@ impl Worker {
     pub fn exchange(
         &mut self,
         mut message: AgentToServer,
-        send: impl FnOnce(&AgentToServer) -> Result<ServerToAgent, ExchangeError>,
+        mut send: impl FnMut(&AgentToServer) -> Result<ServerToAgent, ExchangeError>,
     ) -> Result<(), ExchangeError> {
         self.fill(&mut message);
         let answer = send(&message)?;
-        if message.custom_message.is_some() {
+        if message.custom_message.take().is_some() {
             self.outbox.pop();
         }
         if let Some(remote) = answer.remote_config {
             self.receive(remote);
         }
         if let Some(custom) = &answer.custom_message {
-            self.approval(custom);
+            self.approval(custom, &mut |progress| {
+                let mut message = message.clone();
+                message.custom_message = Some(progress);
+                let _ = send(&message);
+            });
         }
         Ok(())
     }
@@ -193,7 +199,7 @@ impl Worker {
         }
     }
 
-    pub fn approval(&mut self, custom: &CustomMessage) {
+    pub fn approval(&mut self, custom: &CustomMessage, progress: &mut dyn FnMut(CustomMessage)) {
         if custom.capability != sewa_approval::CAPABILITY
             || custom.r#type != sewa_approval::APPROVAL_TYPE
         {
@@ -217,7 +223,7 @@ impl Worker {
         if let Err(error) = self.state.write(ANSWERED, &answered) {
             eprintln!("sewa-agent: cannot keep the answered approvals on disk: {error}");
         }
-        let (status, plan_hash, log) = self.check_and_apply(&signed);
+        let (status, plan_hash, log) = self.check_and_apply(&signed, progress);
         eprintln!(
             "sewa-agent: approval {} of change {}: {status}",
             signed.approval.approval_id, signed.approval.change_id
@@ -247,7 +253,11 @@ impl Worker {
         })
     }
 
-    fn check_and_apply(&mut self, signed: &Signed) -> (&'static str, Option<String>, String) {
+    fn check_and_apply(
+        &mut self,
+        signed: &Signed,
+        progress: &mut dyn FnMut(CustomMessage),
+    ) -> (&'static str, Option<String>, String) {
         let refused = |why: String| ("failed", None, format!("refused: {why}"));
         let pinned = self.state.approvers();
         if let Err(rejection) =
@@ -297,7 +307,10 @@ impl Worker {
         {
             return refused(format!("cannot write down the apply first: {error}"));
         }
-        let (exit_code, log) = self.planner.apply(CURRENT);
+        let mut reporter = Reporter::new(&signed.approval, progress);
+        let (exit_code, log) = self.planner.apply(CURRENT, &mut |step, log| {
+            reporter.report(step, log, Instant::now())
+        });
         let status = if exit_code == 0 { "applied" } else { "failed" };
         (status, Some(plan.plan_hash), log)
     }
@@ -331,6 +344,60 @@ impl Worker {
             data: plan::report(&plan, explicit.as_ref(), now_ms()),
         });
         Some(plan)
+    }
+}
+
+struct Reporter<'a> {
+    approval_id: Uuid,
+    change_id: Uuid,
+    started_at: i64,
+    step: String,
+    log: String,
+    sent_at: Option<Instant>,
+    send: &'a mut dyn FnMut(CustomMessage),
+}
+
+impl<'a> Reporter<'a> {
+    fn new(approval: &sewa_approval::Approval, send: &'a mut dyn FnMut(CustomMessage)) -> Self {
+        Self {
+            approval_id: approval.approval_id,
+            change_id: approval.change_id,
+            started_at: now_ms(),
+            step: String::new(),
+            log: String::new(),
+            sent_at: None,
+            send,
+        }
+    }
+
+    fn due(&self, step: &str, log: &str, now: Instant) -> bool {
+        let Some(sent_at) = self.sent_at else {
+            return true;
+        };
+        let since = now.saturating_duration_since(sent_at);
+        step != self.step || since >= PROGRESS_QUIET || since >= PROGRESS_EVERY && log != self.log
+    }
+
+    fn report(&mut self, step: &str, log: &str, now: Instant) {
+        if !self.due(step, log, now) {
+            return;
+        }
+        step.clone_into(&mut self.step);
+        log.clone_into(&mut self.log);
+        self.sent_at = Some(now);
+        let progress = Progress {
+            approval_id: self.approval_id,
+            change_id: self.change_id,
+            step: step.to_owned(),
+            started_at: self.started_at,
+            at: now_ms(),
+            log: plan::limit(log.to_owned()),
+        };
+        (self.send)(CustomMessage {
+            capability: sewa_approval::CAPABILITY.to_owned(),
+            r#type: sewa_approval::PROGRESS_TYPE.to_owned(),
+            data: serde_json::to_vec(&progress).unwrap_or_default(),
+        });
     }
 }
 
@@ -428,6 +495,7 @@ mod tests {
             uid: Uuid,
             host: Uuid,
             key: Authenticator,
+            progress: Vec<Progress>,
         }
 
         fn fake_mise(root: &Path) -> PathBuf {
@@ -510,6 +578,7 @@ exit 1
                     uid,
                     host: Uuid::now_v7(),
                     key,
+                    progress: Vec::new(),
                 }
             }
 
@@ -537,11 +606,22 @@ exit 1
                     assertion,
                 };
                 self.worker.outbox.clear();
-                self.worker.approval(&CustomMessage {
-                    capability: sewa_approval::CAPABILITY.to_owned(),
-                    r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
-                    data: serde_json::to_vec(&signed).unwrap(),
-                });
+                let mut progress = Vec::new();
+                self.worker.approval(
+                    &CustomMessage {
+                        capability: sewa_approval::CAPABILITY.to_owned(),
+                        r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
+                        data: serde_json::to_vec(&signed).unwrap(),
+                    },
+                    &mut |message| progress.push(message),
+                );
+                self.progress = progress
+                    .iter()
+                    .map(|message| {
+                        assert_eq!(message.r#type, sewa_approval::PROGRESS_TYPE);
+                        serde_json::from_slice(&message.data).unwrap()
+                    })
+                    .collect();
                 let outcome = self
                     .worker
                     .outbox
@@ -576,6 +656,7 @@ exit 1
                 assert_eq!(outcome.status, "failed", "{outcome:?}");
                 assert!(outcome.log.contains(why), "{why} in {:?}", outcome.log);
                 assert!(self.applies().is_empty(), "nothing is applied");
+                assert!(self.progress.is_empty(), "{:?}", self.progress);
             }
 
             fn restart(&mut self) {
@@ -815,6 +896,107 @@ exit 1
         }
 
         #[test]
+        fn an_apply_reports_its_step_while_it_runs() {
+            let mut fixture = Fixture::new();
+            let approval = fixture.approval();
+            let assertion = fixture.sign(&approval);
+            let started = now_ms();
+            let outcome = fixture.send(approval.clone(), assertion);
+            assert_eq!(outcome.status, "applied");
+            let progress = &fixture.progress[0];
+            assert_eq!(progress.step, plan::MISE_STEP);
+            assert_eq!(progress.approval_id, approval.approval_id);
+            assert_eq!(progress.change_id, approval.change_id);
+            assert!(progress.started_at >= started && progress.at >= progress.started_at);
+        }
+
+        #[test]
+        fn progress_goes_out_before_the_result_and_its_answer_is_ignored() {
+            let mut fixture = Fixture::new();
+            let answer = ServerToAgent {
+                custom_message: Some(fixture.signed()),
+                ..Default::default()
+            };
+            let mut other = std::collections::HashMap::new();
+            other.insert(
+                CURRENT.to_owned(),
+                AgentConfigObject {
+                    body: b"[tools]\nfd = \"latest\"\n".to_vec(),
+                    ..Default::default()
+                },
+            );
+            let ignored = ServerToAgent {
+                remote_config: Some(AgentRemoteConfig {
+                    config: Some(AgentConfigMap { config_map: other }),
+                    config_hash: vec![9],
+                }),
+                custom_message: Some(fixture.signed()),
+                ..Default::default()
+            };
+            let mut sent = Vec::new();
+            fixture
+                .worker
+                .exchange(AgentToServer::default(), |message| {
+                    sent.push(message.custom_message.clone());
+                    Ok(if sent.len() == 1 {
+                        answer.clone()
+                    } else {
+                        ignored.clone()
+                    })
+                })
+                .unwrap();
+            assert_eq!(sent.len(), 2, "{sent:?}");
+            let progress = sent[1].as_ref().unwrap();
+            assert_eq!(progress.r#type, sewa_approval::PROGRESS_TYPE);
+            assert_eq!(fixture.applies().len(), 1, "the second approval is ignored");
+            assert_eq!(fixture.worker.remote_config_hash, vec![1]);
+            let kinds: Vec<&str> = fixture
+                .worker
+                .outbox
+                .iter()
+                .map(|message| message.r#type.as_str())
+                .collect();
+            assert_eq!(kinds, [PLAN_TYPE, sewa_approval::RESULT_TYPE, PLAN_TYPE]);
+        }
+
+        #[test]
+        fn progress_follows_steps_and_waits_between_lines() {
+            let approval = Approval {
+                approval_id: Uuid::now_v7(),
+                change_id: Uuid::now_v7(),
+                hosts: Vec::new(),
+            };
+            let mut sent = Vec::new();
+            let mut send = |message: CustomMessage| {
+                sent.push(serde_json::from_slice::<Progress>(&message.data).unwrap());
+            };
+            let mut reporter = Reporter::new(&approval, &mut send);
+            let start = Instant::now();
+            let after = |seconds| start + Duration::from_secs(seconds);
+            reporter.report("native", "", start);
+            reporter.report("native", "a\n", after(1));
+            reporter.report("mise", "a\n", after(2));
+            reporter.report("mise", "a\nb\n", after(3));
+            reporter.report("mise", "a\nb\nc\n", after(7));
+            reporter.report("mise", "a\nb\nc\n", after(20));
+            reporter.report("mise", "a\nb\nc\n", after(27));
+            let seen: Vec<(String, String)> = sent
+                .iter()
+                .map(|progress| (progress.step.clone(), progress.log.clone()))
+                .collect();
+            assert_eq!(
+                seen,
+                [
+                    ("native", ""),
+                    ("mise", "a\n"),
+                    ("mise", "a\nb\nc\n"),
+                    ("mise", "a\nb\nc\n"),
+                ]
+                .map(|(step, log)| (step.to_owned(), log.to_owned()))
+            );
+        }
+
+        #[test]
         fn a_failed_apply_reports_the_log() {
             let mut fixture = Fixture::new();
             fs::write(fixture.root.join("exit"), "1").unwrap();
@@ -839,8 +1021,8 @@ exit 1
                 r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
                 data: serde_json::to_vec(&signed).unwrap(),
             };
-            fixture.worker.approval(&custom);
-            fixture.worker.approval(&custom);
+            fixture.worker.approval(&custom, &mut |_| {});
+            fixture.worker.approval(&custom, &mut |_| {});
             assert_eq!(fixture.applies().len(), 1);
         }
 
@@ -857,11 +1039,14 @@ exit 1
                 approval,
                 assertion,
             };
-            fixture.worker.approval(&CustomMessage {
-                capability: sewa_approval::CAPABILITY.to_owned(),
-                r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
-                data: serde_json::to_vec(&replay).unwrap(),
-            });
+            fixture.worker.approval(
+                &CustomMessage {
+                    capability: sewa_approval::CAPABILITY.to_owned(),
+                    r#type: sewa_approval::APPROVAL_TYPE.to_owned(),
+                    data: serde_json::to_vec(&replay).unwrap(),
+                },
+                &mut |_| {},
+            );
             assert_eq!(fixture.applies().len(), 1, "the replay applies nothing");
         }
 

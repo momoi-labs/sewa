@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub const CAPABILITY: &str = "io.sewa.approval";
 pub const APPROVAL_TYPE: &str = "approval";
 pub const RESULT_TYPE: &str = "result";
+pub const PROGRESS_TYPE: &str = "progress";
 
 pub const ES256: i64 = -7;
 
@@ -84,6 +85,16 @@ pub struct Outcome {
     pub log: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    pub approval_id: Uuid,
+    pub change_id: Uuid,
+    pub step: String,
+    pub started_at: i64,
+    pub at: i64,
+    pub log: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,9 +1,12 @@
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
-use std::io;
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -17,6 +20,12 @@ const ERROR_LIMIT: usize = 4000;
 const LOG_LIMIT: usize = 32 * 1024;
 
 const SPLIT: &str = "split.json";
+
+const TICK: Duration = Duration::from_secs(1);
+
+pub const NATIVE_STEP: &str = "native";
+
+pub const MISE_STEP: &str = "mise";
 
 const MISE_MISSING: &str = "mise is missing";
 
@@ -236,7 +245,7 @@ impl Planner {
         (exit_code, plan, output.stdout, error)
     }
 
-    pub fn apply(&self, config: &str) -> (i32, String) {
+    pub fn apply(&self, config: &str, progress: &mut dyn FnMut(&str, &str)) -> (i32, String) {
         let Some(dir) = self.dir(config) else {
             return (1, format!("unknown config name {config}"));
         };
@@ -247,7 +256,17 @@ impl Planner {
         let mut log = String::new();
         let mut exit_code = 0;
         if !split.native.is_empty() {
-            let (code, native_log) = self.native.apply(&split.native);
+            progress(NATIVE_STEP, &log);
+            let (code, native_log) = thread::scope(|scope| {
+                let native = scope.spawn(|| self.native.apply(&split.native));
+                while !native.is_finished() {
+                    thread::sleep(TICK);
+                    progress(NATIVE_STEP, &log);
+                }
+                native
+                    .join()
+                    .unwrap_or_else(|_| (1, "the native apply panicked\n".to_owned()))
+            });
             log.push_str(&native_log);
             if code != 0 {
                 exit_code = code;
@@ -257,19 +276,15 @@ impl Planner {
             }
         }
         if split.native.is_empty() || !split.rest.is_empty() {
+            progress(MISE_STEP, &log);
             let Some(mise) = self.find_mise() else {
                 log.push_str(&format!("{MISE_MISSING}; its items were not applied\n"));
                 return (1, limit(log));
             };
-            match self
-                .command(&dir, std::env::vars_os())
-                .args(["bootstrap", "--yes", "--only", "packages,tools"])
-                .output()
-            {
-                Ok(output) => {
-                    log.push_str(&String::from_utf8_lossy(&output.stdout));
-                    log.push_str(&String::from_utf8_lossy(&output.stderr));
-                    let code = output.status.code().unwrap_or(1);
+            let mut command = self.command(&dir, std::env::vars_os());
+            command.args(["bootstrap", "--yes", "--only", "packages,tools"]);
+            match stream(command, &mut log, &mut |live| progress(MISE_STEP, live)) {
+                Ok(code) => {
                     if code != 0 {
                         exit_code = code;
                     }
@@ -310,7 +325,67 @@ impl Planner {
     }
 }
 
-fn limit(mut log: String) -> String {
+fn stream(
+    mut command: Command,
+    log: &mut String,
+    progress: &mut dyn FnMut(&str),
+) -> io::Result<i32> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (sender, lines) = mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        read_lines(stdout, false, sender.clone());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        read_lines(stderr, true, sender);
+    }
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut live = log.clone();
+    loop {
+        match lines.recv_timeout(TICK) {
+            Ok((is_stderr, line)) => {
+                live.push_str(&String::from_utf8_lossy(&line));
+                if live.len() > 2 * LOG_LIMIT {
+                    live = limit(live);
+                }
+                if is_stderr {
+                    stderr.extend(line);
+                } else {
+                    stdout.extend(line);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        progress(&live);
+    }
+    let status = child.wait()?;
+    log.push_str(&String::from_utf8_lossy(&stdout));
+    log.push_str(&String::from_utf8_lossy(&stderr));
+    Ok(status.code().unwrap_or(1))
+}
+
+fn read_lines(pipe: impl Read + Send + 'static, is_stderr: bool, sender: Sender<(bool, Vec<u8>)>) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        loop {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if sender.send((is_stderr, line)).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+pub fn limit(mut log: String) -> String {
     if log.len() > LOG_LIMIT {
         let mut start = log.len() - LOG_LIMIT;
         while !log.is_char_boundary(start) {
@@ -476,6 +551,71 @@ mod tests {
         let plan: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(plan["resources"], json!([]), "{plan}");
         assert_eq!(output.status.code(), Some(0));
+    }
+
+    #[test]
+    fn the_apply_streams_mise_output_while_it_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let mise = root.path().join("mise");
+        fs::write(
+            &mise,
+            "#!/bin/sh\necho out\necho one >&2\nsleep 2\necho two >&2\nexit 3\n",
+        )
+        .unwrap();
+        fs::set_permissions(&mise, fs::Permissions::from_mode(0o755)).unwrap();
+        let planner = Planner::new(&root.path().join("state"), mise);
+        fs::create_dir_all(planner.dir(CURRENT).unwrap()).unwrap();
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let (code, log) = planner.apply(CURRENT, &mut |step, live| {
+            seen.push((step.to_owned(), live.to_owned()));
+        });
+        assert_eq!(code, 3);
+        assert_eq!(log, "out\none\ntwo\n");
+        assert_eq!(seen[0], (MISE_STEP.to_owned(), String::new()));
+        assert!(
+            seen.iter()
+                .any(|(_, live)| live.contains("one") && !live.contains("two")),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_slow_native_apply_keeps_reporting_its_step() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let pacman = root.path().join("pacman");
+        fs::write(
+            &pacman,
+            "#!/bin/sh\n[ \"$1\" = -Qq ] && exit 0\nsleep 3\necho done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&pacman, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut planner = Planner::new(&root.path().join("state"), root.path().join("mise"));
+        planner.native = Native {
+            macos: false,
+            brew: Vec::new(),
+            pacman: vec![pacman],
+        };
+        let dir = planner.dir(CURRENT).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let split = Split {
+            native: vec![native::Item {
+                key: "pacman:htop".to_owned(),
+                manager: native::Manager::Pacman,
+                name: "htop".to_owned(),
+                absent: false,
+            }],
+            mise: None,
+            rest: Vec::new(),
+        };
+        fs::write(dir.join(SPLIT), serde_json::to_vec(&split).unwrap()).unwrap();
+        let mut steps = Vec::new();
+        let (code, log) = planner.apply(CURRENT, &mut |step, _| steps.push(step.to_owned()));
+        assert_eq!(code, 0, "{log}");
+        assert!(log.ends_with("done\n"), "{log}");
+        assert!(steps.len() >= 3, "{steps:?}");
+        assert!(steps.iter().all(|step| step == NATIVE_STEP), "{steps:?}");
     }
 
     #[test]
