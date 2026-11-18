@@ -237,7 +237,7 @@ export function ignoreDrift(host: string) {
   return api<null>('POST', `/api/hosts/${encodeURIComponent(host)}/drift/ignore`);
 }
 
-export type SyncStep = 'picked' | 'in_sync' | 'skipped' | 'waiting' | 'applied' | 'failed' | 'replan';
+export type SyncStep = 'picked' | 'in_sync' | 'skipped' | 'waiting' | 'applying' | 'applied' | 'failed' | 'replan';
 
 export type SyncStatus = 'planning' | 'ready' | 'applying' | 'done';
 
@@ -246,6 +246,13 @@ export type HostResult = {
   log: string | null;
   reported_at: string | null;
   received_at: string | null;
+};
+
+export type ApplyProgress = {
+  step: string | null;
+  started_at: string;
+  updated_at: string | null;
+  steps: { step: string; at: string }[];
 };
 
 export type SyncHost = {
@@ -258,6 +265,7 @@ export type SyncHost = {
   step: SyncStep;
   plan: Plan | null;
   result: HostResult | null;
+  progress: ApplyProgress | null;
 };
 
 export type ApprovalEntry = { id: string; by: string; passkey: string; created_at: string; host_count: number };
