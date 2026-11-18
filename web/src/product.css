@@ -50,6 +50,16 @@
 @media not all and (max-width: 720px) {
   .console-brand-compact .console-dns { display: none; }
 }
+.topbar [data-slot="breadcrumb"], .topbar [data-slot="breadcrumb"] > ol > li:first-child, .topbar [data-slot="breadcrumb"] > ol > li:last-child { min-width: 0; }
+.topbar [data-slot="breadcrumb"] > ol { flex-wrap: nowrap; }
+.topbar [data-slot="breadcrumb"] > ol > li { white-space: nowrap; }
+.topbar [data-slot="breadcrumb"] > ol > li:first-child > .console-dns { display: block; }
+.topbar [data-slot="breadcrumb"] [aria-current="page"] { display: block; overflow: hidden; text-overflow: ellipsis; }
+.page > [data-slot="breadcrumb"] { display: none; }
+@media (max-width: 719px) {
+  .topbar [data-slot="breadcrumb"] { flex: 0 100 auto; }
+  .topbar [data-slot="breadcrumb"] > ol > li:not(:last-child) { display: none; }
+}
 
 /* Numbered steps of a configuration form, as in the role page. The number
    hangs in the gutter the fields are indented by, on the title's line. A

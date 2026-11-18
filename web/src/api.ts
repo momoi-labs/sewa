@@ -315,14 +315,6 @@ export function createSync(hosts: string[]) {
   return api<Sync>('POST', '/api/syncs', { hosts });
 }
 
-export type Instance = { address: string };
-
-export const instanceQuery = queryOptions({
-  queryKey: ['instance'],
-  queryFn: () => api<Instance>('GET', '/api/instance'),
-  staleTime: Infinity,
-});
-
 export type Passkey = { id: string; login: string; name: string; credential_id: string; created_at: string };
 
 export const passkeysQuery = queryOptions({

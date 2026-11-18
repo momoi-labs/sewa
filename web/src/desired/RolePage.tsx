@@ -1,11 +1,5 @@
 import {
   Badge,
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
   Button,
   Card,
   Form,
@@ -17,7 +11,7 @@ import {
   Skeleton,
 } from '@momoi-labs/kiso-react';
 import { useQuery } from '@tanstack/react-query';
-import { getRouteApi, Link } from '@tanstack/react-router';
+import { getRouteApi } from '@tanstack/react-router';
 import { type FormEvent, type ReactNode, useState } from 'react';
 
 import { type Item, type Role, roleQuery, rolesQuery } from '../api';
@@ -36,19 +30,6 @@ export function RolePage() {
 
   return (
     <>
-      <Breadcrumb aria-label="Breadcrumb">
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbLink asChild>
-              <Link to="/roles">Roles</Link>
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{role.data?.name ?? '…'}</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
       {role.isError && !role.data ? (
         <ErrorAlert error={role.error} thing="role" onRetry={() => void role.refetch()} />
       ) : (
