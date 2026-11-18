@@ -108,7 +108,8 @@ contract disagree, the contract wins and this file has a bug.
 - The nav icons keep their x when the sidebar collapses, also during the
   animation. Kiso centers the icon in the rail, which follows the sidebar
   width and puts the icon 10px from the open position. `product.css` anchors
-  `.nav-item.sidebar-link-with-icon` at the start in both states, with
+  `.nav-item.sidebar-link-with-icon` at the start in both states, from
+  1024 px only so the phone drawer stays as Kiso draws it, with
   `padding-inline-start` of `--app-shell-brand-inset + (--size-control-sm -
   --size-icon-md) / 2 - --spacing-sm`, so the icon's center is the cat's
   center. The second selector, with `[data-collapsed="true"]`, beats Kiso's
@@ -124,7 +125,10 @@ contract disagree, the contract wins and this file has a bug.
   truncating, links to the app root), the list page, and on a host, role or sync run the
   record's name as `BreadcrumbPage`. It never wraps (`flex-wrap: nowrap`, the first and last item
   can shrink, the last one ellipsizes). Below 720 px only the current page
-  shows, and the address stays next to the symbol in the phone header. From
+  shows, and the address stays next to the symbol in the phone header. There
+  the page name has a cap (the smaller of 8rem and 28vw, then it
+  ellipsizes) and never shrinks below it, and the address shrinks first,
+  down to the symbol. The "Theme" label is hidden there to leave room for the address. From
   720 px the address is in the breadcrumb only. At 1024 px and above the
   sidebar bar has the lockup alone. The host and role pages no longer render
   their own breadcrumb. The sync run page still does, and `product.css`

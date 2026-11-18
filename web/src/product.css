@@ -31,12 +31,12 @@
 }
 .app-shell[data-shell-layout] > .sidebar > .sidebar-header,
 .app-shell[data-shell-layout] > .sidebar[data-collapsed="true"] > .sidebar-header-collapsible { padding-block-end: var(--console-stripe); }
-.sidebar .nav-item.sidebar-link-with-icon,
-.sidebar[data-collapsed="true"] .nav-item.sidebar-link-with-icon {
-  justify-content: flex-start;
-  padding-inline-start: calc(var(--app-shell-brand-inset) + (var(--size-control-sm) - var(--size-icon-md)) / 2 - var(--spacing-sm));
-}
 @media (min-width: 1024px) {
+  .sidebar .nav-item.sidebar-link-with-icon,
+  .sidebar[data-collapsed="true"] .nav-item.sidebar-link-with-icon {
+    justify-content: flex-start;
+    padding-inline-start: calc(var(--app-shell-brand-inset) + (var(--size-control-sm) - var(--size-icon-md)) / 2 - var(--spacing-sm));
+  }
   .app-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
   .app-shell > .sidebar > .sidebar-header .console-dns { display: none; }
 }
@@ -47,17 +47,19 @@
 }
 .app-shell-phone-brand .console-brand-full { display: none; }
 .app-shell-phone-brand .console-brand-compact { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; }
-@media not all and (max-width: 720px) {
+@media not all and (max-width: 719px) {
   .console-brand-compact .console-dns { display: none; }
 }
 .topbar [data-slot="breadcrumb"], .topbar [data-slot="breadcrumb"] > ol > li:first-child, .topbar [data-slot="breadcrumb"] > ol > li:last-child { min-width: 0; }
 .topbar [data-slot="breadcrumb"] > ol { flex-wrap: nowrap; }
 .topbar [data-slot="breadcrumb"] > ol > li { white-space: nowrap; }
 .topbar [data-slot="breadcrumb"] > ol > li:first-child > .console-dns { display: block; }
-.topbar [data-slot="breadcrumb"] [aria-current="page"] { display: block; overflow: hidden; text-overflow: ellipsis; }
+.topbar [data-slot="breadcrumb-page"] { display: block; overflow: hidden; text-overflow: ellipsis; }
 .page > [data-slot="breadcrumb"] { display: none; }
 @media (max-width: 719px) {
-  .topbar [data-slot="breadcrumb"] { flex: 0 100 auto; }
+  .app-shell[data-shell-layout][data-phone-drawer] .topbar .app-shell-phone-brand { flex: 0 100 auto; min-width: var(--size-control-sm); }
+  .topbar [data-slot="breadcrumb"] { flex: 0 0 auto; max-inline-size: min(8rem, 28vw); }
+  .topbar .theme-row .t-label { display: none; }
   .topbar [data-slot="breadcrumb"] > ol > li:not(:last-child) { display: none; }
 }
 
