@@ -40,11 +40,10 @@ import {
   TabsTrigger,
   useToast,
 } from '@momoi-labs/kiso-react';
-import { ArrowLeft, ChevronDown } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { ApiFailure, approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
@@ -258,7 +257,7 @@ function SignedRun({
   const narrow = useNarrow();
   const hosts = tally(sync);
   const [tab, setTab] = useState<'activity' | 'hosts'>('activity');
-  const [fromActivity, setFromActivity] = useState<string | null>(null);
+  const [fromActivity, setFromActivity] = useState(false);
   const [statuses, setStatuses] = useState<ReadonlySet<HostFilter>>(new Set());
   const [feedQuery, setFeedQuery] = useState('');
   const [hostQuery, setHostQuery] = useState('');
@@ -276,10 +275,17 @@ function SignedRun({
   );
   const current = visible.find((host) => host.id === selected) ?? visible[0];
   useEffect(() => {
-    if (tab === 'hosts' && selected && (narrow || fromActivity)) {
-      document.querySelector('.host-row[aria-current="true"]')?.scrollIntoView?.({ block: narrow ? 'start' : 'nearest' });
+    if (tab === 'hosts' && selected && narrow) {
+      document.querySelector('.host-row[aria-current="true"]')?.scrollIntoView?.({ block: 'start' });
     }
-  }, [narrow, selected, tab, fromActivity]);
+  }, [narrow, selected, tab]);
+  const reveal = useCallback(
+    (row: HTMLElement | null) => {
+      row?.scrollIntoView?.({ block: narrow ? 'start' : 'nearest' });
+      row?.focus({ preventScroll: true });
+    },
+    [narrow],
+  );
   const counts: Record<HostFilter, number> = {
     failed: hosts.failed.length,
     applying: hosts.applying.length,
@@ -310,19 +316,11 @@ function SignedRun({
     setFeedQuery('');
     setHostQuery('');
   };
-  const openHost = (id: string, event: string) => {
+  const openHost = (id: string) => {
     setSelected(id);
     setHostQuery('');
     setTab('hosts');
-    setFromActivity(event);
-  };
-  const backToActivity = () => {
-    const event = fromActivity;
-    flushSync(() => {
-      setTab('activity');
-      setFromActivity(null);
-    });
-    [...document.querySelectorAll<HTMLElement>('.activity-row[data-key]')].find((row) => row.dataset.key === event)?.focus();
+    setFromActivity(true);
   };
   const detail = current && <HostDetail host={current} sign={sign} />;
 
@@ -345,7 +343,7 @@ function SignedRun({
         value={tab}
         onValueChange={(value) => {
           setTab(value as typeof tab);
-          setFromActivity(null);
+          setFromActivity(false);
         }}
       >
         <div className="run-tabbar">
@@ -388,14 +386,6 @@ function SignedRun({
           <Feed key={`${order} ${[...statuses].join()} ${feedTyped}`} events={events} order={order} onOpen={openHost} />
         </TabsContent>
         <TabsContent value="hosts">
-          {fromActivity && (
-            <div className="run-back">
-              <Button type="button" size="sm" variant="ghost" autoFocus onClick={backToActivity}>
-                <ArrowLeft className="icon" aria-hidden="true" />
-                Back to activity
-              </Button>
-            </div>
-          )}
           <div className="run-split">
             <div className="run-list stack-sm">
               <Search
@@ -416,6 +406,7 @@ function SignedRun({
                         type="button"
                         className="host-row"
                         aria-current={host.id === current?.id ? 'true' : undefined}
+                        ref={fromActivity && host.id === current?.id ? reveal : undefined}
                         onClick={() => setSelected(host.id)}
                       >
                         <Dot variant={stepTone(host.step)} pulse={host.step === 'applying'} aria-hidden="true" />
@@ -471,7 +462,7 @@ function StatusFilter({
           <ChevronDown className="icon" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end">
+      <PopoverContent align={narrow ? 'start' : 'end'}>
         <fieldset className="host-filter">
           <legend className="t-caps">Status</legend>
           {hostFilters.map((filter) => (
@@ -497,7 +488,7 @@ function StatusFilter({
 
 type FeedOrder = 'new' | 'old';
 
-function Feed({ events, order, onOpen }: { events: ActivityEvent[]; order: FeedOrder; onOpen: (host: string, event: string) => void }) {
+function Feed({ events, order, onOpen }: { events: ActivityEvent[]; order: FeedOrder; onOpen: (host: string) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false);
   const shown = order === 'new' ? events : [...events].reverse();
@@ -563,7 +554,7 @@ function Feed({ events, order, onOpen }: { events: ActivityEvent[]; order: FeedO
           return (
             <li key={event.key}>
               {host ? (
-                <button type="button" className="activity-row" data-key={event.key} onClick={() => onOpen(host.id, event.key)}>
+                <button type="button" className="activity-row" onClick={() => onOpen(host.id)}>
                   {content}
                 </button>
               ) : (
