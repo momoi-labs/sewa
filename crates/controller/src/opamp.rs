@@ -117,6 +117,15 @@ pub async fn exchange(
             Err(error) => tracing::warn!(host = %host, %error, "cannot read an apply result"),
         }
     }
+    if let Some(custom) = &message.custom_message
+        && custom.capability == sewa_approval::CAPABILITY
+        && custom.r#type == sewa_approval::PROGRESS_TYPE
+    {
+        match serde_json::from_slice::<sewa_approval::Progress>(&custom.data) {
+            Ok(progress) => syncs::save_progress(&state.pool, host, &progress).await?,
+            Err(error) => tracing::warn!(host = %host, %error, "cannot read apply progress"),
+        }
+    }
     let approval = syncs::pending(&state.pool, host).await?;
     let remote_config = remote_config(&state.pool, host).await?;
     let known_hash = message

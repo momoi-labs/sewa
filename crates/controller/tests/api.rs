@@ -1381,6 +1381,7 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
     let result = &sync["hosts"][0]["result"];
     assert_eq!(sync["hosts"][0]["step"], "applied");
     assert_eq!(result["log"], "installed jq");
+    assert_eq!(sync["hosts"][0]["progress"], Value::Null);
     let reported = chrono::DateTime::parse_from_rfc3339(result["reported_at"].as_str().unwrap())
         .unwrap()
         .timestamp_millis();
@@ -1391,6 +1392,217 @@ async fn a_sync_goes_to_the_agents_and_back(pool: PgPool) {
     let (_, edits) = json_call(&app, ADMIN, "GET", "/api/syncs/edits", None).await;
     assert_eq!(edits["since"], sync["created_at"]);
     assert_eq!(edits["edits"], json!([]));
+}
+
+fn progress_message(
+    instance: Uuid,
+    signed: &Signed,
+    step: &str,
+    at: i64,
+    log: &str,
+) -> AgentToServer {
+    AgentToServer {
+        custom_message: Some(CustomMessage {
+            capability: "io.sewa.approval".to_owned(),
+            r#type: "progress".to_owned(),
+            data: serde_json::to_vec(&json!({
+                "approval_id": signed.approval.approval_id,
+                "change_id": signed.approval.change_id,
+                "step": step,
+                "started_at": at - 1000,
+                "at": at,
+                "log": log,
+            }))
+            .unwrap(),
+        }),
+        ..report(instance, false)
+    }
+}
+
+async fn applying_host(app: &Router) -> (String, String, Uuid, String, Signed) {
+    let (host, credential, instance) = planned_host(app, "build-1").await;
+    register_passkey(app, &Authenticator::new(1), ORIGIN).await;
+    let id = start_sync(app, json!([host])).await;
+    let (status, _) = approve_with(app, &id, &Authenticator::new(1), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let signed = sent_approval(app, &credential, instance).await.unwrap();
+    (host, credential, instance, id, signed)
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn progress_shows_the_apply_until_its_outcome(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, instance, id, signed) = applying_host(&app).await;
+    let start = chrono::Utc::now().timestamp_millis() - 60_000;
+    let send = |step: &'static str, at: i64, log: &'static str| {
+        let message = progress_message(instance, &signed, step, at, log);
+        let app = app.clone();
+        let credential = credential.clone();
+        async move {
+            let (status, _) = opamp(&app, &credential, &message).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+    };
+
+    send("native", start, "").await;
+    send("mise", start + 10_000, "go@1.22.5 downloading\n").await;
+    let sync = get_sync(&app, &id).await;
+    assert_eq!(sync["status"], "applying");
+    let row = &sync["hosts"][0];
+    assert_eq!(row["step"], "applying");
+    assert_eq!(row["status"], "connected");
+    assert_eq!(row["result"]["log"], "go@1.22.5 downloading\n");
+    assert_eq!(row["progress"]["step"], "mise");
+    let steps: Vec<&Value> = row["progress"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["step"])
+        .collect();
+    assert_eq!(steps, ["native", "mise"]);
+    let started =
+        chrono::DateTime::parse_from_rfc3339(row["progress"]["started_at"].as_str().unwrap())
+            .unwrap()
+            .timestamp_millis();
+    assert_eq!(started, start - 1000);
+    assert!(sent_approval(&app, &credential, instance).await.is_none());
+
+    send("mise", start + 5_000, "older\n").await;
+    send(
+        "mise",
+        start + 20_000,
+        "go@1.22.5 downloading\n✓ go@1.22.5\n",
+    )
+    .await;
+    let row = &get_sync(&app, &id).await["hosts"][0];
+    assert_eq!(row["result"]["log"], "go@1.22.5 downloading\n✓ go@1.22.5\n");
+    assert_eq!(row["progress"]["steps"].as_array().unwrap().len(), 2);
+
+    let outcome = Outcome {
+        approval_id: signed.approval.approval_id,
+        change_id: signed.approval.change_id,
+        status: "applied".to_owned(),
+        plan_hash: Some("p1".to_owned()),
+        log: "full log".to_owned(),
+        at: Some(start + 30_000),
+    };
+    opamp(&app, &credential, &outcome_message(instance, &outcome)).await;
+    send("mise", start + 40_000, "late\n").await;
+    let sync = get_sync(&app, &id).await;
+    assert_eq!(sync["status"], "done");
+    let row = &sync["hosts"][0];
+    assert_eq!(row["step"], "applied");
+    assert_eq!(row["result"]["log"], "full log");
+    assert_eq!(row["progress"]["steps"].as_array().unwrap().len(), 2);
+    let kinds = events(&pool, &host).await;
+    assert!(kinds.ends_with(&["sync.approved".to_owned(), "plan.applied".to_owned()]));
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn a_host_disabled_while_applying_fails_its_row(pool: PgPool) {
+    let app = app(pool.clone());
+    let (host, credential, instance, id, signed) = applying_host(&app).await;
+    let now = chrono::Utc::now().timestamp_millis();
+    opamp(
+        &app,
+        &credential,
+        &progress_message(instance, &signed, "mise", now, ""),
+    )
+    .await;
+    assert_eq!(get_sync(&app, &id).await["hosts"][0]["step"], "applying");
+    let (status, _) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        &format!("/api/hosts/{host}/disable"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let row = &get_sync(&app, &id).await["hosts"][0];
+    assert_eq!(row["step"], "failed");
+    assert_eq!(
+        row["result"]["log"],
+        "The host was disabled before its agent reported."
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_0008_keeps_rows_in_every_status(pool: PgPool) {
+    sewa_controller::MIGRATOR.run_to(7, &pool).await.unwrap();
+    let host: Uuid = sqlx::query_scalar("INSERT INTO hosts (name) VALUES ('m') RETURNING id")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let passkey: Uuid = sqlx::query_scalar(
+        "INSERT INTO passkeys (login, name, credential_id, public_key)
+         VALUES ('a', 'k', '\\x01', '\\x02') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let statuses = [
+        "picked", "in_sync", "skipped", "waiting", "applied", "failed", "replan",
+    ];
+    for status in statuses {
+        let sync: Uuid =
+            sqlx::query_scalar("INSERT INTO syncs (created_by) VALUES ('a') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let signed = matches!(status, "waiting" | "applied" | "failed" | "replan");
+        let approval: Option<Uuid> = if signed {
+            Some(
+                sqlx::query_scalar(
+                    "INSERT INTO approvals (sync_id, by, passkey_id, hosts, assertion)
+                     VALUES ($1, 'a', $2, '[]', '{}') RETURNING id",
+                )
+                .bind(sync)
+                .bind(passkey)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        sqlx::query(
+            "INSERT INTO sync_hosts (sync_id, host_id, status, approval_id, log)
+             VALUES ($1, $2, $3, $4, 'kept')",
+        )
+        .bind(sync)
+        .bind(host)
+        .bind(status)
+        .bind(approval)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sewa_controller::MIGRATOR.run(&pool).await.unwrap();
+    let rows: Vec<(String, Option<String>, Option<String>, Value)> =
+        sqlx::query_as("SELECT status, log, step, steps FROM sync_hosts ORDER BY status")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let mut expected = statuses.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        expected
+    );
+    for (_, log, step, steps) in &rows {
+        assert_eq!(log.as_deref(), Some("kept"));
+        assert_eq!(*step, None);
+        assert_eq!(*steps, json!([]));
+    }
+    let unsigned = sqlx::query("UPDATE sync_hosts SET status = 'applying' WHERE status = 'picked'")
+        .execute(&pool)
+        .await;
+    assert!(unsigned.is_err(), "applying needs an approval");
+    sqlx::query("UPDATE sync_hosts SET status = 'applying' WHERE status = 'waiting'")
+        .execute(&pool)
+        .await
+        .unwrap();
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
