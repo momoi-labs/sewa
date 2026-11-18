@@ -71,16 +71,18 @@ export function tally(sync: Sync) {
     picked: of('picked'),
     inSync: of('in_sync'),
     skipped: of('skipped'),
+    applying: of('applying'),
     waiting: of('waiting'),
     applied: of('applied'),
     failed: of('failed', 'replan'),
   };
 }
 
-export type HostFilter = 'failed' | 'waiting' | 'applied' | 'in_sync' | 'skipped';
+export type HostFilter = 'failed' | 'applying' | 'waiting' | 'applied' | 'in_sync' | 'skipped';
 
 export const hostFilters: { key: HostFilter; label: string }[] = [
   { key: 'failed', label: 'Failed' },
+  { key: 'applying', label: 'Applying' },
   { key: 'waiting', label: 'Waiting' },
   { key: 'applied', label: 'Applied' },
   { key: 'in_sync', label: 'In sync' },
@@ -102,17 +104,56 @@ export function filterOf(step: SyncHost['step']): HostFilter | null {
 const stepRank: Record<SyncHost['step'], number> = {
   failed: 0,
   replan: 1,
-  waiting: 2,
-  picked: 3,
-  applied: 4,
-  in_sync: 5,
-  skipped: 6,
+  applying: 2,
+  waiting: 3,
+  picked: 4,
+  applied: 5,
+  in_sync: 6,
+  skipped: 7,
 };
 
 export function orderHosts(hosts: SyncHost[]): SyncHost[] {
   return [...hosts].sort(
     (a, b) => stepRank[a.step] - stepRank[b.step] || a.name.localeCompare(b.name, undefined, { numeric: true }),
   );
+}
+
+export type ActivityEvent = {
+  key: string;
+  at: string;
+  kind: 'signed' | 'started' | 'step' | 'applied' | 'failed';
+  who: string;
+  what: string;
+};
+
+export const progressStepLabel: Record<string, string> = { native: 'native packages', mise: 'mise' };
+
+export function activity(sync: Sync): ActivityEvent[] {
+  const events: ActivityEvent[] = sync.approvals.map((approval) => ({
+    key: `approval-${approval.id}`,
+    at: approval.created_at,
+    kind: 'signed',
+    who: approval.by,
+    what: `signed ${plural(approval.host_count, 'plan')} with passkey ${approval.passkey}`,
+  }));
+  for (const host of sync.hosts) {
+    if (host.progress) {
+      host.progress.steps.forEach((step, index) =>
+        events.push({
+          key: `step-${host.id}-${index}`,
+          at: step.at,
+          kind: 'step',
+          who: host.name,
+          what: progressStepLabel[step.step] ?? step.step,
+        }),
+      );
+      events.push({ key: `started-${host.id}`, at: host.progress.started_at, kind: 'started', who: host.name, what: 'started' });
+    }
+    const at = host.result?.reported_at ?? host.result?.received_at;
+    if (!at || (host.step !== 'applied' && host.step !== 'failed')) continue;
+    events.push({ key: `host-${host.id}`, at, kind: host.step, who: host.name, what: host.step });
+  }
+  return events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
 export function finishedAt(sync: Sync): string {

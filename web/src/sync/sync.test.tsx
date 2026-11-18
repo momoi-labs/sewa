@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalOptions, Host, HostState, ListedHost, Passkey, Sync, SyncHost } from '../api';
 import { mockApi, renderRoute } from '../test-utils';
 import { decode, encode } from '../webauthn';
-import { orderHosts } from './sync';
+import { activity, orderHosts } from './sync';
 
 const host: Host = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -41,6 +41,7 @@ function picked(id: string, name: string, extra: Partial<SyncHost> = {}): SyncHo
     step: 'picked',
     plan,
     result: null,
+    progress: null,
     ...extra,
   };
 }
@@ -450,13 +451,14 @@ describe('sync run', () => {
   const run = (hosts: SyncHost[], status: Sync['status'] = 'done'): Sync => ({ ...ready, status, approvals, hosts });
   const rows = () => within(screen.getByRole('list', { name: 'Hosts' })).getAllByRole('button').map((row) => row.textContent);
 
-  it('orders failed, replan, waiting, applied, in sync, then skipped, by name', () => {
+  it('orders failed, replan, applying, waiting, applied, in sync, then skipped, by name', () => {
     const hosts = [
       picked('1', 'skipped-1', { step: 'skipped' }),
       picked('2', 'in-sync-1', { step: 'in_sync' }),
       picked('3', 'applied-1', { step: 'applied' }),
       picked('4', 'waiting-1', { step: 'waiting' }),
       picked('5', 'replan-1', { step: 'replan' }),
+      picked('8', 'applying-1', { step: 'applying' }),
       picked('6', 'build-10', { step: 'failed' }),
       picked('7', 'build-2', { step: 'failed' }),
     ];
@@ -464,11 +466,68 @@ describe('sync run', () => {
       'build-2',
       'build-10',
       'replan-1',
+      'applying-1',
       'waiting-1',
       'applied-1',
       'in-sync-1',
       'skipped-1',
     ]);
+  });
+
+  it('lists the signing and the finished hosts, newest first', () => {
+    const hosts = [
+      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z' } }),
+      picked('2', 'build-2', { step: 'failed', result: { ...result, reported_at: '2026-01-02T10:05:00Z' } }),
+      picked('3', 'build-3', { step: 'waiting', result: null }),
+    ];
+    expect(activity(run(hosts)).map((event) => `${event.who} ${event.what}`)).toEqual([
+      'build-2 failed',
+      'build-1 applied',
+      'admin signed 4 plans with passkey Laptop',
+    ]);
+  });
+
+  it('lists when a host started and each step it reported', () => {
+    const progress = {
+      step: 'mise',
+      started_at: '2026-01-02T10:03:00Z',
+      updated_at: '2026-01-02T10:04:30Z',
+      steps: [
+        { step: 'native', at: '2026-01-02T10:03:00Z' },
+        { step: 'mise', at: '2026-01-02T10:04:00Z' },
+      ],
+    };
+    const hosts = [
+      picked('1', 'build-1', { step: 'applied', progress, result: { ...result, reported_at: '2026-01-02T10:06:00Z' } }),
+    ];
+    expect(activity(run(hosts)).map((event) => `${event.who} ${event.what}`)).toEqual([
+      'build-1 applied',
+      'build-1 mise',
+      'build-1 native packages',
+      'build-1 started',
+      'admin signed 4 plans with passkey Laptop',
+    ]);
+  });
+
+  it('shows the newest 10 events and expands the rest', async () => {
+    const user = userEvent.setup();
+    const hosts = Array.from({ length: 12 }, (_, n) =>
+      picked(`h${n}`, `host-${n}`, { step: 'applied', result: { ...result, reported_at: `2026-01-02T10:${String(10 + n)}:00Z` } }),
+    );
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    const feed = await screen.findByRole('list', { name: 'Activity' });
+    expect(within(feed).getAllByRole('listitem')).toHaveLength(10);
+    await user.click(screen.getByRole('button', { name: 'Show all 13' }));
+    expect(within(feed).getAllByRole('listitem')).toHaveLength(13);
+  });
+
+  it('dates a delayed report by when the host reported it', () => {
+    const hosts = [
+      picked('1', 'build-1', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:03:00Z', received_at: '2026-01-02T12:00:00Z' } }),
+    ];
+    expect(activity(run(hosts))[0]?.at).toBe('2026-01-02T10:03:00Z');
   });
 
   it('shows the plan of the next host after another host was picked in the filter', async () => {
@@ -548,6 +607,76 @@ describe('sync run', () => {
     expect(await screen.findByText(/This host is offline, so nothing happens yet/)).toBeInTheDocument();
     expect(screen.queryByText(/picks up the change on its next check-in/)).not.toBeInTheDocument();
     expect(screen.getByRole('table', { name: 'Install (1)' })).toBeInTheDocument();
+  });
+
+  const applying = {
+    step: 'mise',
+    started_at: '2026-01-02T10:03:00Z',
+    updated_at: '2026-01-02T10:04:30Z',
+    steps: [{ step: 'mise', at: '2026-01-02T10:03:00Z' }],
+  };
+
+  it('shows an applying host with its step, the steps so far and the live log', async () => {
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: run(
+          [picked('a', 'build-a', { step: 'applying', progress: applying, result: { ...result, reported_at: null, log: 'mise install node\nfetching' } })],
+          'applying',
+        ),
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    const detail = await screen.findByRole('region', { name: 'build-a detail' });
+    expect(rows()).toEqual(['build-aApplying']);
+    expect(screen.getByRole('button', { name: 'Applying 1' })).toBeInTheDocument();
+    expect(within(detail).getByText(/^Applying: mise, started /)).toBeInTheDocument();
+    const steps = within(detail).getByRole('list', { name: 'build-a apply steps' });
+    expect(within(steps).getAllByRole('listitem').map((step) => step.textContent?.split(/\d/)[0])).toEqual([
+      'Signed',
+      'Checked',
+      'mise',
+      'Reported',
+    ]);
+    expect(within(steps).getByText('mise').closest('li')).toHaveAttribute('aria-current', 'step');
+    expect(within(detail).getByText('fetching')).toBeInTheDocument();
+    expect(screen.queryByText(/No report since/)).not.toBeInTheDocument();
+  });
+
+  it('warns when an applying host stops reporting, and keeps it applying', async () => {
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: {
+        status: 200,
+        body: run([picked('a', 'build-a', { step: 'applying', status: 'disconnected', progress: applying, result })], 'applying'),
+      },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    expect(await screen.findByText(/^No report since .*its result arrives when it reports again\.$/)).toBeInTheDocument();
+    expect(rows()).toEqual(['build-aApplying']);
+  });
+
+  it('marks the steps a failed host ran as done and the report as failed', async () => {
+    const progress = { ...applying, step: 'native', steps: [{ step: 'native', at: '2026-01-02T10:03:00Z' }] };
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('f', 'build-f', { step: 'failed', progress, result })]) },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    const steps = await screen.findByRole('list', { name: 'build-f apply steps' });
+    const state = (label: string) => within(steps).getByText(label).closest('[data-state]')?.getAttribute('data-state');
+    expect(state('Native packages')).toBe('done');
+    expect(state('mise')).toBe('pending');
+    expect(state('Reported')).toBe('failed');
+  });
+
+  it('shows only signed and reported for an agent that sends no progress', async () => {
+    mockApi({
+      [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('o', 'build-o', { step: 'applied', result })]) },
+    });
+    renderRoute(`/sync/${ready.id}`);
+    const steps = await screen.findByRole('list', { name: 'build-o apply steps' });
+    expect(within(steps).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(steps).getByText('Signed')).toBeInTheDocument();
+    expect(within(steps).getByText('Reported')).toBeInTheDocument();
   });
 
   it('says the controller keeps only the end of a long log', async () => {

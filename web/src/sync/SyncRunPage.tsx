@@ -41,10 +41,12 @@ import { signApproval } from '../webauthn';
 import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
 import {
+  activity,
   filterOf,
   finishedAt,
   type HostFilter,
   hostFilters,
+  progressStepLabel,
   orderHosts,
   planState,
   plural,
@@ -215,13 +217,14 @@ const stepLabel: Record<SyncHost['step'], string> = {
   in_sync: 'In sync',
   skipped: 'Skipped',
   waiting: 'Waiting',
+  applying: 'Applying',
   applied: 'Applied',
   failed: 'Failed',
   replan: 'Plan changed',
 };
 
 function stepTone(step: SyncHost['step']): 'success' | 'danger' | 'neutral' {
-  if (step === 'applied') return 'success';
+  if (step === 'applied' || step === 'applying') return 'success';
   return step === 'failed' || step === 'replan' ? 'danger' : 'neutral';
 }
 
@@ -246,15 +249,17 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
   }, [narrow, selected]);
   const counts: Record<HostFilter, number> = {
     failed: hosts.failed.length,
+    applying: hosts.applying.length,
     waiting: hosts.waiting.length,
     applied: hosts.applied.length,
     in_sync: hosts.inSync.length,
     skipped: hosts.skipped.length,
   };
-  const total = hosts.waiting.length + hosts.applied.length + hosts.failed.length;
+  const open = hosts.waiting.length + hosts.applying.length;
+  const total = open + hosts.applied.length + hosts.failed.length;
   const finished = hosts.applied.length + hosts.failed.length;
   const approval = sync.approvals[0]!;
-  const applyStatus: StepsItem['status'] = hosts.waiting.length > 0 ? undefined : hosts.failed.length > 0 ? 'error' : 'completed';
+  const applyStatus: StepsItem['status'] = open > 0 ? undefined : hosts.failed.length > 0 ? 'error' : 'completed';
   const steps: StepsItem[] = [
     { id: 'hosts', label: 'Pick hosts', status: 'completed', description: plural(sync.hosts.length, 'host') },
     { id: 'plans', label: 'Plans', status: 'completed', description: plural(plans, 'plan') },
@@ -280,7 +285,7 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
           <Steps
             label="Sync progress"
             items={steps}
-            current={hosts.waiting.length > 0 ? 'apply' : null}
+            current={open > 0 ? 'apply' : null}
           />
           {total > 0 && (
             <Progress
@@ -341,7 +346,7 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
                       aria-current={host.id === current?.id ? 'true' : undefined}
                       onClick={() => setSelected(host.id)}
                     >
-                      <Dot variant={stepTone(host.step)} aria-hidden="true" />
+                      <Dot variant={stepTone(host.step)} pulse={host.step === 'applying'} aria-hidden="true" />
                       <span className="host-row-name truncate" title={host.name}>
                         {host.name}
                       </span>
@@ -360,12 +365,45 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
           </Card>
         )}
       </div>
+      <ActivityFeed sync={sync} />
     </>
   );
 }
 
 function logLines(log: string) {
   return log.split('\n').map((line, index) => <LogViewLine key={index}>{line}</LogViewLine>);
+}
+
+const SIGNED: SyncHost['step'][] = ['waiting', 'applying', 'applied', 'failed', 'replan'];
+
+function applySteps(host: SyncHost): StepItem[] {
+  const done = host.step === 'applied';
+  const ended = done || host.step === 'failed' || host.step === 'replan';
+  const at = host.result?.reported_at ?? host.result?.received_at;
+  const ran = host.progress?.steps ?? [];
+  const steps: StepItem[] = [{ key: 'signed', label: 'Signed', state: 'done' }];
+  if (host.progress) {
+    steps.push({ key: 'checked', label: 'Checked', state: 'done' });
+    ran.forEach((step, index) => {
+      const last = index === ran.length - 1;
+      steps.push({
+        key: step.step,
+        label: step.step === 'native' ? 'Native packages' : step.step,
+        state: last && !ended ? 'running' : 'done',
+        meta: formatClock(step.at),
+      });
+    });
+    if (!ran.some((step) => step.step === 'mise')) {
+      steps.push({ key: 'mise', label: 'mise', state: 'pending', meta: ended ? 'Not run' : undefined });
+    }
+  }
+  steps.push({
+    key: 'reported',
+    label: 'Reported',
+    state: done ? 'done' : ended ? 'failed' : 'pending',
+    meta: ended && at ? formatClock(at) : undefined,
+  });
+  return steps;
 }
 
 function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof useSign> }) {
@@ -383,7 +421,9 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
           <h2 className="host-detail-name">{host.name}</h2>
           {when && <p className="muted">{when}</p>}
         </div>
-        <StatusBadge tone={stepTone(host.step)}>{stepLabel[host.step]}</StatusBadge>
+        <StatusBadge tone={stepTone(host.step)} pulse={host.step === 'applying'}>
+          {stepLabel[host.step]}
+        </StatusBadge>
       </div>
       {host.step === 'replan' && (
         <Alert variant="warning">
@@ -402,6 +442,23 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
               : `This host is ${host.status === 'disconnected' ? 'offline' : 'not connected yet'}, so nothing happens yet. It applies the change on its first check-in after it connects.`}
         </p>
       )}
+      {host.step === 'applying' &&
+        (host.status === 'connected' ? (
+          <p className="muted">
+            Applying: {progressStepLabel[host.progress?.step ?? ''] ?? host.progress?.step}
+            {host.progress && `, started ${formatClock(host.progress.started_at)}`}
+          </p>
+        ) : (
+          <Alert variant="warning">
+            <AlertContent>
+              <AlertDescription>
+                No report since {host.last_seen_at ? formatClock(host.last_seen_at) : 'it started'}. The agent may have
+                stopped; its result arrives when it reports again.
+              </AlertDescription>
+            </AlertContent>
+          </Alert>
+        ))}
+      {SIGNED.includes(host.step) && <StepList label={`${host.name} apply steps`} steps={applySteps(host)} />}
       {host.step === 'skipped' && (
         <p className="muted">Offline or no plan when the sync was signed, so nothing ran. It catches up when you sync it again.</p>
       )}
@@ -439,6 +496,41 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
         </div>
       )}
     </section>
+  );
+}
+
+const FEED_LIMIT = 10;
+
+function ActivityFeed({ sync }: { sync: Sync }) {
+  const [all, setAll] = useState(false);
+  const events = activity(sync);
+  const shown = all ? events : events.slice(0, FEED_LIMIT);
+  return (
+    <Card>
+      <CardContent className="stack-sm">
+        <h2 className="t-caps">Activity</h2>
+        <ol className="activity-feed" aria-label="Activity">
+          {shown.map((event) => (
+            <li key={event.key}>
+              <time className="mono muted" dateTime={event.at}>
+                {formatClock(event.at)}
+              </time>
+              <Dot variant={event.kind === 'failed' ? 'danger' : event.kind === 'started' || event.kind === 'step' ? 'neutral' : 'success'} aria-hidden="true" />
+              <span className="activity-text">
+                <strong>{event.who}</strong> {event.what}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {events.length > FEED_LIMIT && (
+          <div className="row-wrap">
+            <Button type="button" size="sm" aria-expanded={all} onClick={() => setAll(!all)}>
+              {all ? 'Show fewer' : `Show all ${events.length}`}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
