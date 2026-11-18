@@ -124,6 +124,7 @@ export type ActivityEvent = {
   kind: 'signed' | 'started' | 'step' | 'applied' | 'failed';
   who: string;
   what: string;
+  host: SyncHost | null;
 };
 
 export const progressStepLabel: Record<string, string> = { native: 'native packages', mise: 'mise' };
@@ -135,6 +136,7 @@ export function activity(sync: Sync): ActivityEvent[] {
     kind: 'signed',
     who: approval.by,
     what: `signed ${plural(approval.host_count, 'plan')} with passkey ${approval.passkey}`,
+    host: null,
   }));
   for (const host of sync.hosts) {
     if (host.progress) {
@@ -145,13 +147,14 @@ export function activity(sync: Sync): ActivityEvent[] {
           kind: 'step',
           who: host.name,
           what: progressStepLabel[step.step] ?? step.step,
+          host,
         }),
       );
-      events.push({ key: `started-${host.id}`, at: host.progress.started_at, kind: 'started', who: host.name, what: 'started' });
+      events.push({ key: `started-${host.id}`, at: host.progress.started_at, kind: 'started', who: host.name, what: 'started', host });
     }
     const at = host.result?.reported_at ?? host.result?.received_at;
     if (!at || (host.step !== 'applied' && host.step !== 'failed')) continue;
-    events.push({ key: `host-${host.id}`, at, kind: host.step, who: host.name, what: host.step });
+    events.push({ key: `host-${host.id}`, at, kind: host.step, who: host.name, what: host.step, host });
   }
   return events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }

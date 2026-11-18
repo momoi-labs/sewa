@@ -1,4 +1,5 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -66,6 +67,9 @@ const options: ApprovalOptions = {
 };
 
 const realCredentials = Object.getOwnPropertyDescriptor(navigator, 'credentials');
+
+const rows = () => within(screen.getByRole('list', { name: 'Hosts' })).getAllByRole('button').map((row) => row.textContent);
+const openHosts = async () => userEvent.click(await screen.findByRole('tab', { name: /^Hosts/ }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -281,6 +285,7 @@ describe('sync', () => {
       },
     });
     const { unmount } = renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     expect(await screen.findByText(checkIn)).toBeInTheDocument();
     unmount();
     mockApi({
@@ -290,7 +295,8 @@ describe('sync', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
-    expect(await screen.findByRole('button', { name: 'Applied 1' })).toBeInTheDocument();
+    await openHosts();
+    expect(rows()).toEqual(['build-1Applied']);
     expect(screen.queryByText(checkIn)).not.toBeInTheDocument();
   });
 
@@ -322,6 +328,7 @@ describe('sync', () => {
     renderRoute(`/sync/${ready.id}`);
     expect(await screen.findByText(/Sync finished with failures/)).toBeInTheDocument();
     expect(screen.getByText('1 host applied, 1 failed, 1 skipped.', { exact: false })).toBeInTheDocument();
+    await openHosts();
     expect(screen.getByText('error: target not found: jq')).toBeInTheDocument();
     const install = screen.getByRole('table', { name: 'Install (1)' });
     expect(within(install).getByText('jq')).toBeInTheDocument();
@@ -449,7 +456,11 @@ describe('sync run', () => {
   const result = { plan_hash: 'p1', log: null, reported_at: '2026-01-02T10:05:00Z', received_at: null };
   const approvals = [{ id: 'a', by: 'admin', passkey: 'Laptop', created_at: '2026-01-02T10:02:00Z', host_count: 4 }];
   const run = (hosts: SyncHost[], status: Sync['status'] = 'done'): Sync => ({ ...ready, status, approvals, hosts });
-  const rows = () => within(screen.getByRole('list', { name: 'Hosts' })).getAllByRole('button').map((row) => row.textContent);
+  const feed = () =>
+    within(screen.getByRole('list', { name: 'Activity' }))
+      .getAllByRole('listitem')
+      .map((item) => `${item.querySelector('strong')?.textContent} ${item.querySelector('.activity-text')?.textContent}`);
+  const status = () => screen.getByRole('button', { name: /^Status/ });
 
   it('orders failed, replan, applying, waiting, applied, in sync, then skipped, by name', () => {
     const hosts = [
@@ -509,18 +520,82 @@ describe('sync run', () => {
     ]);
   });
 
-  it('shows the newest 10 events and expands the rest', async () => {
+  const three = [
+    picked('a', 'build-a', { step: 'failed', result: { ...result, reported_at: '2026-01-02T10:05:00Z' } }),
+    picked('b', 'build-b', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:04:00Z' } }),
+    picked('c', 'build-c', { step: 'waiting', result: null }),
+  ];
+
+  it('filters the activity and the hosts by status, then clears the filters', async () => {
     const user = userEvent.setup();
-    const hosts = Array.from({ length: 12 }, (_, n) =>
-      picked(`h${n}`, `host-${n}`, { step: 'applied', result: { ...result, reported_at: `2026-01-02T10:${String(10 + n)}:00Z` } }),
-    );
-    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(three, 'applying') } });
     renderRoute(`/sync/${ready.id}`);
 
-    const feed = await screen.findByRole('list', { name: 'Activity' });
-    expect(within(feed).getAllByRole('listitem')).toHaveLength(10);
-    await user.click(screen.getByRole('button', { name: 'Show all 13' }));
-    expect(within(feed).getAllByRole('listitem')).toHaveLength(13);
+    await screen.findByRole('list', { name: 'Activity' });
+    expect(feed()).toEqual(['build-a failed', 'build-b applied', 'admin signed 4 plans with passkey Laptop']);
+    const clear = screen.getByRole('button', { name: 'Clear filters' });
+    expect(clear).toBeDisabled();
+    await user.click(status());
+    await user.click(screen.getByRole('checkbox', { name: /^Failed/ }));
+    await user.click(screen.getByRole('checkbox', { name: /^Waiting/ }));
+    expect(screen.getByRole('checkbox', { name: /^Waiting/ })).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(status()).toHaveAccessibleName('Status: Failed, Waiting');
+    expect(feed()).toEqual(['build-a failed']);
+    expect(screen.getByRole('tab', { name: /^Hosts/ })).toHaveTextContent(/^Hosts\s*2$/);
+
+    await openHosts();
+    expect(rows()).toEqual(['build-aFailed', 'build-cWaiting']);
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(rows()).toEqual(['build-aFailed', 'build-cWaiting', 'build-bApplied']);
+    expect(status()).toHaveAccessibleName('Status');
+    expect(screen.getByRole('button', { name: 'Clear filters' })).toBeDisabled();
+  });
+
+  it('shows the newest event first, or the oldest first when asked', async () => {
+    const user = userEvent.setup();
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(three, 'applying') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    await screen.findByRole('list', { name: 'Activity' });
+    expect(feed()[0]).toBe('build-a failed');
+    await user.click(screen.getByRole('radio', { name: 'Oldest first' }));
+    expect(feed()).toEqual(['admin signed 4 plans with passkey Laptop', 'build-b applied', 'build-a failed']);
+  });
+
+  it('counts new events while the user reads further down, and jumps back to them', async () => {
+    const user = userEvent.setup();
+    let hosts = three;
+    mockApi({ [`GET /api/syncs/${ready.id}`]: () => ({ status: 200, body: run(hosts, 'applying') }) });
+    renderRoute(`/sync/${ready.id}`);
+
+    await screen.findByRole('list', { name: 'Activity' });
+    const scroller = document.querySelector<HTMLElement>('.run-feed')!;
+    scroller.scrollTop = 120;
+    fireEvent.scroll(scroller);
+    hosts = [...three.slice(0, 2), picked('c', 'build-c', { step: 'applied', result: { ...result, reported_at: '2026-01-02T10:06:00Z' } })];
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await user.click(await screen.findByRole('button', { name: '1 new' }));
+    expect(scroller.scrollTop).toBe(0);
+    expect(screen.queryByRole('button', { name: '1 new' })).not.toBeInTheDocument();
+    expect(feed()[0]).toBe('build-c applied');
+    focusManager.setFocused(undefined);
+  });
+
+  it('opens a host from the activity and goes back', async () => {
+    const user = userEvent.setup();
+    mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(three, 'applying') } });
+    renderRoute(`/sync/${ready.id}`);
+
+    await user.click(await screen.findByRole('button', { name: /build-b.*applied/ }));
+    expect(screen.getByRole('tab', { name: /^Hosts/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('region', { name: 'build-b detail' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to activity' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(screen.getByRole('tab', { name: /^Activity/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: /build-b.*applied/ })).toHaveFocus();
   });
 
   it('dates a delayed report by when the host reported it', () => {
@@ -539,7 +614,7 @@ describe('sync run', () => {
     mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'done') } });
     renderRoute(`/sync/${ready.id}`);
 
-    await screen.findByRole('list', { name: 'Hosts' });
+    await openHosts();
     await user.type(screen.getByRole('searchbox', { name: 'Filter packages' }), 'zzz');
     await user.click(screen.getByRole('button', { name: /build-b/ }));
     expect(screen.getByRole('searchbox', { name: 'Filter packages' })).toHaveValue('');
@@ -555,19 +630,24 @@ describe('sync run', () => {
     mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(hosts, 'applying') } });
     renderRoute(`/sync/${ready.id}`);
 
-    await screen.findByRole('list', { name: 'Hosts' });
+    await openHosts();
     expect(rows().slice(0, 4)).toEqual(['host-10Failed', 'host-20Failed', 'host-30Failed', 'host-33Waiting']);
     expect(screen.getByRole('region', { name: 'host-10 detail' })).toHaveTextContent('boom host-10');
-    expect(screen.getByRole('button', { name: 'Failed 3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Waiting 3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Applied 30' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'In sync 3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Skipped 1' })).toBeInTheDocument();
+    await user.click(status());
+    expect(screen.getAllByRole('checkbox').map((box) => box.closest('label')?.textContent)).toEqual([
+      'Failed3',
+      'Applying0',
+      'Waiting3',
+      'Applied30',
+      'In sync3',
+      'Skipped1',
+    ]);
 
-    await user.click(screen.getByRole('button', { name: 'Skipped 1' }));
+    await user.click(screen.getByRole('checkbox', { name: /^Skipped/ }));
     expect(rows()).toEqual(['host-39Skipped']);
     expect(screen.getByRole('region', { name: 'host-39 detail' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Skipped 1' }));
+    await user.click(screen.getByRole('checkbox', { name: /^Skipped/ }));
+    await user.keyboard('{Escape}');
     await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'host-2');
     expect(rows()).toEqual(['host-20Failed', 'host-21Applied', 'host-22Applied', 'host-23Applied', 'host-24Applied', 'host-25Applied', 'host-26Applied', 'host-27Applied', 'host-28Applied', 'host-29Applied']);
   });
@@ -588,9 +668,10 @@ describe('sync run', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     const detail = await screen.findByRole('region', { name: 'build-r detail' });
     expect(within(detail).getByText('Plan changed, nothing ran')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Failed 1' })).toBeInTheDocument();
+    expect(rows()).toEqual(['build-rPlan changed']);
     await user.click(within(detail).getByRole('button', { name: 'Retry build-r' }));
     await waitFor(() => expect(calls.find((call) => call.path.endsWith('/approve'))?.body).toMatchObject({ hosts: ['r'] }));
     expect(await screen.findByText(/picks up the change on its next check-in/)).toBeInTheDocument();
@@ -604,6 +685,7 @@ describe('sync run', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     expect(await screen.findByText(/This host is offline, so nothing happens yet/)).toBeInTheDocument();
     expect(screen.queryByText(/picks up the change on its next check-in/)).not.toBeInTheDocument();
     expect(screen.getByRole('table', { name: 'Install (1)' })).toBeInTheDocument();
@@ -627,9 +709,9 @@ describe('sync run', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     const detail = await screen.findByRole('region', { name: 'build-a detail' });
     expect(rows()).toEqual(['build-aApplying']);
-    expect(screen.getByRole('button', { name: 'Applying 1' })).toBeInTheDocument();
     expect(within(detail).getByText(/^Applying: mise, started /)).toBeInTheDocument();
     const steps = within(detail).getByRole('list', { name: 'build-a apply steps' });
     expect(within(steps).getAllByRole('listitem').map((step) => step.textContent?.split(/\d/)[0])).toEqual([
@@ -651,6 +733,7 @@ describe('sync run', () => {
       },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     expect(await screen.findByText(/^No report since .*its result arrives when it reports again\.$/)).toBeInTheDocument();
     expect(rows()).toEqual(['build-aApplying']);
   });
@@ -661,6 +744,7 @@ describe('sync run', () => {
       [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('f', 'build-f', { step: 'failed', progress, result })]) },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     const steps = await screen.findByRole('list', { name: 'build-f apply steps' });
     const state = (label: string) => within(steps).getByText(label).closest('[data-state]')?.getAttribute('data-state');
     expect(state('Native packages')).toBe('done');
@@ -673,6 +757,7 @@ describe('sync run', () => {
       [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('o', 'build-o', { step: 'applied', result })]) },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     const steps = await screen.findByRole('list', { name: 'build-o apply steps' });
     expect(within(steps).getAllByRole('listitem')).toHaveLength(2);
     expect(within(steps).getByText('Signed')).toBeInTheDocument();
@@ -685,6 +770,7 @@ describe('sync run', () => {
       [`GET /api/syncs/${ready.id}`]: { status: 200, body: run([picked('f', 'f'.repeat(80), { step: 'failed', result: { ...result, log } })]) },
     });
     renderRoute(`/sync/${ready.id}`);
+    await openHosts();
     expect(await screen.findByText('The controller keeps only the end of a long log.')).toBeInTheDocument();
     expect(screen.getByText('last line')).toBeInTheDocument();
   });
