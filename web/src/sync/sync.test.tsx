@@ -584,18 +584,23 @@ describe('sync run', () => {
     focusManager.setFocused(undefined);
   });
 
-  it('opens a host from the activity and goes back', async () => {
+  it('opens a host from the activity selected and focused, even when the host search hid it', async () => {
     const user = userEvent.setup();
     mockApi({ [`GET /api/syncs/${ready.id}`]: { status: 200, body: run(three, 'applying') } });
     renderRoute(`/sync/${ready.id}`);
 
+    expect(await screen.findByRole('radiogroup', { name: 'Order' })).toBeInTheDocument();
+    await openHosts();
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'zzz');
+    await user.click(screen.getByRole('tab', { name: /^Activity/ }));
     await user.click(await screen.findByRole('button', { name: /build-b.*applied/ }));
+
     expect(screen.getByRole('tab', { name: /^Hosts/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Back to activity' })).not.toBeInTheDocument();
+    const row = within(screen.getByRole('list', { name: 'Hosts' })).getByRole('button', { name: /build-b/ });
+    expect(row).toHaveAttribute('aria-current', 'true');
+    expect(row).toHaveFocus();
     expect(screen.getByRole('region', { name: 'build-b detail' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Back to activity' })).toHaveFocus();
-    await user.keyboard('{Enter}');
-    expect(screen.getByRole('tab', { name: /^Activity/ })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('button', { name: /build-b.*applied/ })).toHaveFocus();
   });
 
   it('dates a delayed report by when the host reported it', () => {
