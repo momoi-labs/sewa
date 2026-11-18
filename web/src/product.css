@@ -31,6 +31,11 @@
 }
 .app-shell[data-shell-layout] > .sidebar > .sidebar-header,
 .app-shell[data-shell-layout] > .sidebar[data-collapsed="true"] > .sidebar-header-collapsible { padding-block-end: var(--console-stripe); }
+.sidebar .nav-item.sidebar-link-with-icon,
+.sidebar[data-collapsed="true"] .nav-item.sidebar-link-with-icon {
+  justify-content: flex-start;
+  padding-inline-start: calc(var(--app-shell-brand-inset) + (var(--size-control-sm) - var(--size-icon-md)) / 2 - var(--spacing-sm));
+}
 @media (min-width: 1024px) {
   .app-shell > .sidebar > .sidebar-header .console-brand-full { height: var(--size-control-sm); align-content: center; }
   .app-shell > .sidebar > .sidebar-header .console-dns { display: none; }

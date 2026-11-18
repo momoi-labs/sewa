@@ -104,6 +104,17 @@ contract disagree, the contract wins and this file has a bug.
   - Below 1024 px the shell bar keeps one fixed height, as above 1024 px
     (`--app-shell-bar-height`), because Kiso's `shellLayout` sets it from
     1024 px only.
+- The nav icons keep their x when the sidebar collapses, also during the
+  animation. Kiso centers the icon in the rail, which follows the sidebar
+  width and puts the icon 10px from the open position. `product.css` anchors
+  `.nav-item.sidebar-link-with-icon` at the start in both states, with
+  `padding-inline-start` of `--app-shell-brand-inset + (--size-control-sm -
+  --size-icon-md) / 2 - --spacing-sm`, so the icon's center is the cat's
+  center. The second selector, with `[data-collapsed="true"]`, beats Kiso's
+  collapsed rule. The recipe's 7px is the link inset minus 1px for the rail
+  border. Here the link inset is `--spacing-sm` and the brand inset already
+  removes the 1px, so the offset is 8px. The product has no CSS that keeps
+  `.sidebar-expanded-content` visible in the rail or toggles on hover.
 - The sidebar is `collapsible`, with the toggle in the header. The collapse
   button is new, and the rail keeps the symbol.
 - sewa has no login page, so the login lockup rule does not apply. It has no
