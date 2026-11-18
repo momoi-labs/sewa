@@ -6,7 +6,7 @@ contract disagree, the contract wins and this file has a bug.
 
 ## Contracts
 
-- Package: `@momoi-labs/kiso-react` 0.31.1 and `@momoi-labs/kiso` 1.9.1 in
+- Package: `@momoi-labs/kiso-react` 0.32.0 and `@momoi-labs/kiso` 1.10.0 in
   `web/`.
 - Contracts: `web/node_modules/@momoi-labs/kiso/kiso/`. Start at `AGENTS.md`.
 
@@ -16,14 +16,14 @@ contract disagree, the contract wins and this file has a bug.
 | --- | --- |
 | Screens | `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
 | Product components | `web/src/components/`, `web/src/hosts/`, `web/src/desired/`, `web/src/sync/`, `web/src/passkeys/` |
-| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the tinted brand slot, the numbered form steps, the host picker layout, the bar height and bottom line the sidebar header and the top bar share, the gap above the first nav item (`--spacing-sm`, as the page body), the role item tables (the full-width role form and the phone cards, see Exceptions), the sync plan tables, the wrapping step row, and the sync run's tab row, status filter, host list, detail and activity feed. `web/src/components/SewaMark.css` holds the logo colors. `web/src/components/ErrorPage.css` sizes the error illustration. |
+| Product CSS | `web/src/product.css`: only what Kiso leaves to the product: a LogView height, the logo, the bar stripe and the brand inset, the numbered form steps, the host picker layout, the role item tables (the full-width role form and the phone cards, see Exceptions), the sync plan tables, the wrapping step row, and the sync run's tab row, status filter, host list, detail and activity feed. `web/src/components/ErrorPage.css` sizes the error illustration. |
 
 ## Product components
 
 | Component | Use |
 | --- | --- |
-| `Shell` | The application shell with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand slot is tinted with the accent surface and shows the bold name over the instance address from `GET /api/instance`. |
-| `SewaMark` | The sewa emblem in the shell's brand. The brand kit is in `docs/brand/`. |
+| `Shell` | The application shell (`shellLayout`, `collapsible`, `togglePlacement="header"`) with the Hosts, Roles, Sync and Passkeys destinations and the theme selector. Its brand is the sewa lockup. The instance address from `GET /api/instance` shows under it below 1024 px only. |
+| `BrandSymbol`, `Lockup` | The sewa cat in the shell's brand: the symbol in the rail and the phone header, the lockup in the open sidebar and the drawer. Each renders the light and the dark drawing, and CSS shows the one for the theme. The files are in `web/src/brand/`, copies of `docs/brand/`. |
 | `HostStatusBadge` | A host's status: waiting, connected, disconnected, or disabled. Only the disconnected dot pulses. |
 | `ErrorAlert` | An API failure, with what happened and what to do. |
 | `ErrorPage` | The screen when a page's data fails to load with `not_admin`, a 5xx, or no answer: a brand illustration, the code, a title, one line, and one action. It fills the page with no shell, and the root route renders it. |
@@ -80,12 +80,36 @@ contract disagree, the contract wins and this file has a bug.
 
 ## Exceptions
 
-- The shell's brand shows the sewa emblem with `SewaMark` in place of a
-  BrandMark, 32 px high, with no fill behind it. Kiso 1.9's BrandMark holds a
-  letter or a 14 px line icon on the primary fill, and the emblem cannot be
-  read at that size. Its colors are the brand's, in `SewaMark.css`, not Kiso
-  tokens, so it keeps its colors with any accent. Kiso needs a BrandMark for
-  a product logo.
+- The shell's brand shows the sewa cat in place of a BrandMark. Kiso's
+  BrandMark holds a letter or a 14 px line icon on the primary fill, and the
+  cat cannot be read at that size. The drawings keep their own colors, not
+  Kiso tokens, so they keep them with any accent.
+- Logo rules (from the Kiso console recipe, with sewa's drawings):
+  - One drawing per theme (`mark.svg`, `mark-dark.svg`, `lockup.svg`,
+    `lockup-dark.svg`). Both `<img>` render and CSS shows the one for
+    `:root[data-theme]`, or for `prefers-color-scheme` when no theme is set.
+  - The symbol is a square of `--size-control-sm`. The cat is 1469 by 1283, so
+    it fits the square by width. The lockup is `--size-control-sm * 1283 / 1469`
+    high (viewBox `24 24 4387.4 1283`), so its cat has the symbol's size.
+    The cat does not move or resize when the sidebar collapses.
+  - Kiso's brand inset assumes a `--size-control-xs` mark. The product sets
+    `--app-shell-brand-inset` to `(--size-touch-min + 2 * --spacing-md - 1px -
+    --size-control-sm) / 2`. The 1px is the rail border.
+  - The sidebar bar has the accent surface and a 3px `--color-primary` stripe
+    at the bottom, an inset box-shadow, because Kiso has no 3px token. The
+    bar pads its bottom by the stripe, open and in the rail.
+  - Open sidebar: the lockup alone. Rail: the symbol (`brandMark`). Phone
+    header: the symbol, plus the address in mono up to 720 px. Drawer: the
+    lockup with the address.
+  - Below 1024 px the shell bar keeps one fixed height, as above 1024 px
+    (`--app-shell-bar-height`), because Kiso's `shellLayout` sets it from
+    1024 px only.
+- The sidebar is `collapsible`, with the toggle in the header. The collapse
+  button is new, and the rail keeps the symbol.
+- sewa has no login page, so the login lockup rule does not apply. It has no
+  breadcrumb root for the address, so the address is not shown in the open
+  sidebar at 1024 px and above. It shows only below 1024 px. The favicon is
+  the cat, as before. The recipe's PNG app icons are not added.
 - `ErrorPage` is a full page: the `hatch` fills the viewport and one
   column (`.empty` with Kiso's title, description and actions) holds a brand
   illustration, about 192 px high. It uses that composition for 5xx errors

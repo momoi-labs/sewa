@@ -5,7 +5,7 @@ import { KeyRound, Layers, RefreshCw, Server } from 'lucide-react';
 import { useState } from 'react';
 
 import { instanceQuery } from '../api';
-import { SewaMark } from './SewaMark';
+import { BrandSymbol, Lockup } from './Logo';
 import { applyTheme, savedTheme, type Theme } from './theme';
 
 export function Shell() {
@@ -13,6 +13,7 @@ export function Shell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [theme, setTheme] = useState<Theme>(savedTheme);
   const instance = useQuery({ ...instanceQuery, throwOnError: false });
+  const site = instance.data && address(instance.data.address);
 
   const navigation: ApplicationShellGroup[] = [
     {
@@ -51,12 +52,19 @@ export function Shell() {
 
   return (
     <ApplicationShell
+      collapsible
+      togglePlacement="header"
+      shellLayout
+      brandMark={<BrandSymbol />}
       brand={
-        <Link to="/" className="brand brand-slot" aria-label="sewa, home">
-          <SewaMark />
-          <span className="brand-slot-text">
-            <span className="brand-slot-name">sewa</span>
-            {instance.data && <span className="brand-slot-site">{address(instance.data.address)}</span>}
+        <Link to="/" className="console-brand" aria-label="sewa, home">
+          <span className="console-brand-full">
+            <Lockup />
+            {site && <span className="console-dns">{site}</span>}
+          </span>
+          <span className="console-brand-compact">
+            <BrandSymbol />
+            {site && <span className="console-dns">{site}</span>}
           </span>
         </Link>
       }
