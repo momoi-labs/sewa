@@ -3,6 +3,7 @@ import {
   AlertContent,
   AlertDescription,
   AlertTitle,
+  Badge,
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -12,13 +13,19 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Dot,
   LogView,
   LogViewLine,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Progress,
+  RadioGroup,
+  RadioGroupItem,
   Search,
   Skeleton,
   Spinner,
@@ -27,11 +34,17 @@ import {
   Steps,
   type StepItem,
   type StepsItem,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   useToast,
 } from '@momoi-labs/kiso-react';
+import { ArrowLeft, ChevronDown } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getRouteApi, Link } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 
 import { ApiFailure, approveSync, type Sync, type SyncHost, syncApprovalOptions, syncQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
@@ -42,6 +55,7 @@ import { byName } from './byPackage';
 import { PlanByPackage } from './PlanByPackage';
 import {
   activity,
+  type ActivityEvent,
   filterOf,
   finishedAt,
   type HostFilter,
@@ -126,10 +140,12 @@ function Run({ sync }: { sync: Sync }) {
 
   if (signed) {
     return (
-      <div className="stack">
-        <Finished sync={sync} nothing={nothing} allInSync={allInSync} />
-        <SignedRun sync={sync} sign={sign} plans={plans} />
-      </div>
+      <SignedRun
+        sync={sync}
+        sign={sign}
+        plans={plans}
+        notice={<Finished sync={sync} nothing={nothing} allInSync={allInSync} />}
+      />
     );
   }
 
@@ -228,25 +244,42 @@ function stepTone(step: SyncHost['step']): 'success' | 'danger' | 'neutral' {
   return step === 'failed' || step === 'replan' ? 'danger' : 'neutral';
 }
 
-function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof useSign>; plans: number }) {
+function SignedRun({
+  sync,
+  sign,
+  plans,
+  notice,
+}: {
+  sync: Sync;
+  sign: ReturnType<typeof useSign>;
+  plans: number;
+  notice: ReactNode;
+}) {
   const narrow = useNarrow();
   const hosts = tally(sync);
-  const [query, setQuery] = useState('');
-  const [filters, setFilters] = useState<ReadonlySet<HostFilter>>(new Set());
+  const [tab, setTab] = useState<'activity' | 'hosts'>('activity');
+  const [fromActivity, setFromActivity] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<ReadonlySet<HostFilter>>(new Set());
+  const [feedQuery, setFeedQuery] = useState('');
+  const [hostQuery, setHostQuery] = useState('');
+  const [order, setOrder] = useState<FeedOrder>('new');
   const [selected, setSelected] = useState<string | null>(null);
-  const typed = query.trim().toLowerCase();
-  const visible = orderHosts(sync.hosts).filter((host) => {
+  const matches = (host: SyncHost) => {
     const filter = filterOf(host.step);
-    return (
-      host.name.toLowerCase().includes(typed) && (filters.size === 0 || (filter !== null && filters.has(filter)))
-    );
-  });
+    return statuses.size === 0 || (filter !== null && statuses.has(filter));
+  };
+  const hostTyped = hostQuery.trim().toLowerCase();
+  const visible = orderHosts(sync.hosts).filter((host) => matches(host) && host.name.toLowerCase().includes(hostTyped));
+  const feedTyped = feedQuery.trim().toLowerCase();
+  const events = activity(sync).filter((event) =>
+    event.host ? matches(event.host) && event.host.name.toLowerCase().includes(feedTyped) : statuses.size === 0 && !feedTyped,
+  );
   const current = visible.find((host) => host.id === selected) ?? visible[0];
   useEffect(() => {
-    if (narrow && selected) {
-      document.querySelector('.host-row[aria-current="true"]')?.scrollIntoView?.({ block: 'start' });
+    if (tab === 'hosts' && selected && (narrow || fromActivity)) {
+      document.querySelector('.host-row[aria-current="true"]')?.scrollIntoView?.({ block: narrow ? 'start' : 'nearest' });
     }
-  }, [narrow, selected]);
+  }, [narrow, selected, tab, fromActivity]);
   const counts: Record<HostFilter, number> = {
     failed: hosts.failed.length,
     applying: hosts.applying.length,
@@ -271,102 +304,277 @@ function SignedRun({ sync, sign, plans }: { sync: Sync; sign: ReturnType<typeof 
       description: hosts.failed.length > 0 ? `${hosts.failed.length} failed` : undefined,
     },
   ];
-  const toggle = (key: HostFilter) => {
-    const next = new Set(filters);
-    if (!next.delete(key)) next.add(key);
-    setFilters(next);
+  const searched = tab === 'activity' ? feedTyped : hostTyped;
+  const clear = () => {
+    setStatuses(new Set());
+    setFeedQuery('');
+    setHostQuery('');
+  };
+  const openHost = (id: string, event: string) => {
+    setSelected(id);
+    setHostQuery('');
+    setTab('hosts');
+    setFromActivity(event);
+  };
+  const backToActivity = () => {
+    const event = fromActivity;
+    flushSync(() => {
+      setTab('activity');
+      setFromActivity(null);
+    });
+    [...document.querySelectorAll<HTMLElement>('.activity-row[data-key]')].find((row) => row.dataset.key === event)?.focus();
   };
   const detail = current && <HostDetail host={current} sign={sign} />;
 
   return (
-    <>
-      <Card>
-        <CardContent className="stack-sm">
-          <Steps
-            label="Sync progress"
-            items={steps}
-            current={open > 0 ? 'apply' : null}
+    <Card className="run-panel">
+      <CardContent className="stack-sm">
+        {notice}
+        <Steps label="Sync progress" items={steps} current={open > 0 ? 'apply' : null} />
+        {total > 0 && (
+          <Progress
+            label="Apply progress"
+            value={finished}
+            max={total}
+            valueText={`${finished} of ${plural(total, 'host')} finished`}
           />
-          {total > 0 && (
-            <Progress
-              label="Apply progress"
-              value={finished}
-              max={total}
-              valueText={`${finished} of ${plural(total, 'host')} finished`}
-            />
-          )}
-          <div className="run-chips" role="group" aria-label="Filter hosts by status">
-            {hostFilters.map((filter) => (
-              <Button
-                key={filter.key}
-                type="button"
-                size="sm"
-                variant={filters.has(filter.key) ? 'primary' : 'default'}
-                aria-pressed={filters.has(filter.key)}
-                onClick={() => toggle(filter.key)}
-              >
-                {filter.label} <span className="mono">{counts[filter.key]}</span>
-              </Button>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-      <div className="run-split">
-        <Card>
-          <CardContent className="stack-sm">
-            <Search
-              aria-label="Search hosts"
-              placeholder="Search hosts"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            {visible.length === 0 ? (
-              <div className="stack-sm" role="status">
-                <p className="muted">No host matches.</p>
-                <div className="row-wrap">
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => {
-                      setQuery('');
-                      setFilters(new Set());
-                    }}
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <ul className="host-list" aria-label="Hosts">
-                {visible.map((host) => (
-                  <li key={host.id}>
-                    <button
-                      type="button"
-                      className="host-row"
-                      aria-current={host.id === current?.id ? 'true' : undefined}
-                      onClick={() => setSelected(host.id)}
-                    >
-                      <Dot variant={stepTone(host.step)} pulse={host.step === 'applying'} aria-hidden="true" />
-                      <span className="host-row-name truncate" title={host.name}>
-                        {host.name}
-                      </span>
-                      <span className="host-row-state">{stepLabel[host.step]}</span>
-                    </button>
-                    {narrow && host.id === current?.id && detail}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-        {!narrow && detail && (
-          <Card className="run-detail">
-            <CardContent>{detail}</CardContent>
-          </Card>
         )}
-      </div>
-      <ActivityFeed sync={sync} />
-    </>
+      </CardContent>
+      <Tabs
+        className="run-tabs"
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value as typeof tab);
+          setFromActivity(null);
+        }}
+      >
+        <div className="run-tabbar">
+          <TabsList aria-label="Sync run views">
+            <TabsTrigger value="activity">
+              Activity <Badge variant="neutral" className="badge-count">{events.length}</Badge>
+            </TabsTrigger>
+            <TabsTrigger value="hosts">
+              Hosts <Badge variant="neutral" className="badge-count">{visible.length}</Badge>
+            </TabsTrigger>
+          </TabsList>
+          <div className="list-filters run-tools">
+            {tab === 'activity' && (
+              <Search
+                aria-label="Search hosts"
+                placeholder="Search hosts"
+                value={feedQuery}
+                onChange={(event) => setFeedQuery(event.target.value)}
+              />
+            )}
+            <StatusFilter value={statuses} counts={counts} narrow={narrow} onChange={setStatuses} />
+            {tab === 'activity' && (
+              <RadioGroup
+                className="run-order"
+                variant="segmented"
+                label="Order"
+                value={order}
+                onValueChange={(value) => setOrder(value as FeedOrder)}
+              >
+                <RadioGroupItem value="new" label="Newest first" />
+                <RadioGroupItem value="old" label="Oldest first" />
+              </RadioGroup>
+            )}
+            <Button type="button" disabled={statuses.size === 0 && !searched} onClick={clear}>
+              Clear filters
+            </Button>
+          </div>
+        </div>
+        <TabsContent value="activity">
+          <Feed key={`${order} ${[...statuses].join()} ${feedTyped}`} events={events} order={order} onOpen={openHost} />
+        </TabsContent>
+        <TabsContent value="hosts">
+          {fromActivity && (
+            <div className="run-back">
+              <Button type="button" size="sm" variant="ghost" autoFocus onClick={backToActivity}>
+                <ArrowLeft className="icon" aria-hidden="true" />
+                Back to activity
+              </Button>
+            </div>
+          )}
+          <div className="run-split">
+            <div className="run-list stack-sm">
+              <Search
+                aria-label="Search hosts"
+                placeholder="Search hosts"
+                value={hostQuery}
+                onChange={(event) => setHostQuery(event.target.value)}
+              />
+              {visible.length === 0 ? (
+                <p className="muted" role="status">
+                  No host matches.
+                </p>
+              ) : (
+                <ul className="host-list" aria-label="Hosts">
+                  {visible.map((host) => (
+                    <li key={host.id}>
+                      <button
+                        type="button"
+                        className="host-row"
+                        aria-current={host.id === current?.id ? 'true' : undefined}
+                        onClick={() => setSelected(host.id)}
+                      >
+                        <Dot variant={stepTone(host.step)} pulse={host.step === 'applying'} aria-hidden="true" />
+                        <span className="host-row-name truncate" title={host.name}>
+                          {host.name}
+                        </span>
+                        <span className="host-row-state">{stepLabel[host.step]}</span>
+                      </button>
+                      {narrow && host.id === current?.id && detail}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {!narrow && detail && <div className="run-detail">{detail}</div>}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </Card>
+  );
+}
+
+function statusLabel(value: ReadonlySet<HostFilter>, narrow: boolean) {
+  if (value.size === 0) return 'Status';
+  const names = `Status: ${hostFilters
+    .filter((filter) => value.has(filter.key))
+    .map((filter) => filter.label)
+    .join(', ')}`;
+  return names.length <= (narrow ? 18 : 26) ? names : `Status: ${value.size} selected`;
+}
+
+function StatusFilter({
+  value,
+  counts,
+  narrow,
+  onChange,
+}: {
+  value: ReadonlySet<HostFilter>;
+  counts: Record<HostFilter, number>;
+  narrow: boolean;
+  onChange: (next: ReadonlySet<HostFilter>) => void;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" className="status-filter">
+          <span className="truncate">{statusLabel(value, narrow)}</span>
+          {value.size > 0 && (
+            <Badge variant="neutral" className="badge-count" aria-hidden="true">
+              {value.size}
+            </Badge>
+          )}
+          <ChevronDown className="icon" aria-hidden="true" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end">
+        <fieldset className="host-filter">
+          <legend className="t-caps">Status</legend>
+          {hostFilters.map((filter) => (
+            <label key={filter.key} className="host-filter-row">
+              <Checkbox
+                checked={value.has(filter.key)}
+                onCheckedChange={(checked) => {
+                  const next = new Set(value);
+                  if (checked === true) next.add(filter.key);
+                  else next.delete(filter.key);
+                  onChange(next);
+                }}
+              />
+              <span>{filter.label}</span>
+              <span className="muted mono">{counts[filter.key]}</span>
+            </label>
+          ))}
+        </fieldset>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+type FeedOrder = 'new' | 'old';
+
+function Feed({ events, order, onOpen }: { events: ActivityEvent[]; order: FeedOrder; onOpen: (host: string, event: string) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [away, setAway] = useState(false);
+  const shown = order === 'new' ? events : [...events].reverse();
+  const keys = shown.map((event) => event.key).join(' ');
+  const [seen, setSeen] = useState(keys);
+  if (!away && seen !== keys) setSeen(keys);
+  useLayoutEffect(() => {
+    const feed = ref.current;
+    if (order === 'old' && !away && feed) feed.scrollTop = feed.scrollHeight;
+  }, [order, away, keys]);
+  const known = new Set(seen.split(' '));
+  const fresh = away ? shown.filter((event) => !known.has(event.key)).length : 0;
+  const jump = () => {
+    const feed = ref.current;
+    if (feed) feed.scrollTop = order === 'new' ? 0 : feed.scrollHeight;
+    setAway(false);
+  };
+  const pill = fresh > 0 && (
+    <div className={`feed-new feed-new-${order === 'new' ? 'top' : 'bottom'}`}>
+      <Button type="button" size="sm" variant="primary" onClick={jump}>
+        {order === 'new' ? `${fresh} new` : `${fresh} new below`}
+      </Button>
+    </div>
+  );
+
+  if (events.length === 0) {
+    return (
+      <p className="muted run-feed-empty" role="status">
+        No event matches.
+      </p>
+    );
+  }
+  return (
+    <div
+      ref={ref}
+      className="run-feed"
+      onScroll={() => {
+        const feed = ref.current;
+        if (!feed) return;
+        const next = order === 'new' ? feed.scrollTop > 8 : feed.scrollHeight - feed.scrollTop - feed.clientHeight > 8;
+        if (next !== away) setAway(next);
+      }}
+    >
+      {order === 'new' && pill}
+      <ol className="activity-feed" aria-label="Activity">
+        {shown.map((event) => {
+          const content = (
+            <>
+              <time className="mono muted" dateTime={event.at}>
+                {formatClock(event.at)}
+              </time>
+              <span className="activity-who">
+                <Dot
+                  variant={event.kind === 'failed' ? 'danger' : event.kind === 'applied' ? 'success' : 'neutral'}
+                  aria-hidden="true"
+                />
+                <strong className="truncate">{event.who}</strong>
+              </span>
+              <span className="activity-text">{event.what}</span>
+            </>
+          );
+          const host = event.host;
+          return (
+            <li key={event.key}>
+              {host ? (
+                <button type="button" className="activity-row" data-key={event.key} onClick={() => onOpen(host.id, event.key)}>
+                  {content}
+                </button>
+              ) : (
+                <div className="activity-row">{content}</div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {order === 'old' && pill}
+    </div>
   );
 }
 
@@ -496,41 +704,6 @@ function HostDetail({ host, sign }: { host: SyncHost; sign: ReturnType<typeof us
         </div>
       )}
     </section>
-  );
-}
-
-const FEED_LIMIT = 10;
-
-function ActivityFeed({ sync }: { sync: Sync }) {
-  const [all, setAll] = useState(false);
-  const events = activity(sync);
-  const shown = all ? events : events.slice(0, FEED_LIMIT);
-  return (
-    <Card>
-      <CardContent className="stack-sm">
-        <h2 className="t-caps">Activity</h2>
-        <ol className="activity-feed" aria-label="Activity">
-          {shown.map((event) => (
-            <li key={event.key}>
-              <time className="mono muted" dateTime={event.at}>
-                {formatClock(event.at)}
-              </time>
-              <Dot variant={event.kind === 'failed' ? 'danger' : event.kind === 'started' || event.kind === 'step' ? 'neutral' : 'success'} aria-hidden="true" />
-              <span className="activity-text">
-                <strong>{event.who}</strong> {event.what}
-              </span>
-            </li>
-          ))}
-        </ol>
-        {events.length > FEED_LIMIT && (
-          <div className="row-wrap">
-            <Button type="button" size="sm" aria-expanded={all} onClick={() => setAll(!all)}>
-              {all ? 'Show fewer' : `Show all ${events.length}`}
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }
 
