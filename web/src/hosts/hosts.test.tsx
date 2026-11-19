@@ -285,12 +285,12 @@ describe('hosts', () => {
       [`DELETE /api/hosts/${connected.id}`]: { status: 204 },
     });
     renderRoute(`/hosts/${connected.id}`);
-    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete host' }));
     const dialog = await screen.findByRole('alertdialog', { name: 'Delete build-1?' });
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'Delete host' }));
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete host' }));
     expect(await screen.findByText('No hosts yet')).toBeInTheDocument();
     expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);

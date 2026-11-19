@@ -10,18 +10,20 @@ import {
   Button,
   Dialog,
   DialogContent,
+  Lifecycle,
   Spinner,
   useToast,
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 
 import { type Created, deleteHost, disableHost, enableHost, type Host } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { InstallStep } from './AddHostDialog';
+import { HostStatusBadge } from './HostStatusBadge';
 
-export function HostActions({ host }: { host: Host }) {
+export function HostActions({ host, children }: { host: Host; children: ReactNode }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
@@ -57,28 +59,38 @@ export function HostActions({ host }: { host: Host }) {
 
   return (
     <>
-      <div className="row-wrap">
-        {host.status === 'disabled' ? (
-          <Button size="sm" aria-busy={enable.isPending} onClick={() => enable.mutate()}>
-            {enable.isPending && <Spinner size="sm" />}
-            Enable
-          </Button>
-        ) : (
-          <Button size="sm" aria-busy={disable.isPending} onClick={() => disable.mutate()}>
-            {disable.isPending && <Spinner size="sm" />}
-            Disable
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="destructive"
-          onClick={() => {
-            remove.reset();
-            setDeleting(true);
-          }}
-        >
-          Delete
-        </Button>
+      <div className="between">
+        {children}
+        <Lifecycle
+          status={<HostStatusBadge status={host.status} />}
+          actionsLabel="Host actions"
+          actions={
+            <>
+              {host.status === 'disabled' ? (
+                <Button size="sm" aria-busy={enable.isPending} onClick={() => enable.mutate()}>
+                  {enable.isPending && <Spinner size="sm" />}
+                  Enable
+                </Button>
+              ) : (
+                <Button size="sm" aria-busy={disable.isPending} onClick={() => disable.mutate()}>
+                  {disable.isPending && <Spinner size="sm" />}
+                  Disable
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="btn-danger-ghost"
+                onClick={() => {
+                  remove.reset();
+                  setDeleting(true);
+                }}
+              >
+                Delete host
+              </Button>
+            </>
+          }
+        />
       </div>
       {failure && <ErrorAlert error={failure} />}
       <Dialog open={created !== null} onOpenChange={(open) => !open && setCreated(null)}>
