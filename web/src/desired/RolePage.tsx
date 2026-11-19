@@ -5,6 +5,7 @@ import {
   Form,
   FormActions,
   FormField,
+  Lifecycle,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
@@ -16,6 +17,8 @@ import { type FormEvent, type ReactNode, useState } from 'react';
 
 import { type Item, type Role, roleQuery, rolesQuery } from '../api';
 import { ErrorAlert, errorCode } from '../components/ErrorAlert';
+import { plural } from '../sync/sync';
+import { ItemChips } from './ItemChips';
 import { diffItems, diffSize, itemProblem } from './items';
 import { ItemTable } from './ItemTable';
 import { SaveRoleDialog } from './SaveRoleDialog';
@@ -23,6 +26,13 @@ import { SaveRoleDialog } from './SaveRoleDialog';
 const route = getRouteApi('/roles/$roleId');
 
 const NAME = /^[A-Za-z0-9._-]{1,63}$/;
+
+export function nameProblem(name: string, failure: unknown): string | undefined {
+  if (!name.trim()) return 'Enter a name.';
+  if (!NAME.test(name.trim())) return 'Use up to 63 letters, digits, dots, dashes or underscores.';
+  if (errorCode(failure) === 'name_taken') return 'A role has this name. Choose another.';
+  return undefined;
+}
 
 export function RolePage() {
   const { roleId } = route.useParams();
@@ -34,18 +44,26 @@ export function RolePage() {
         <ErrorAlert error={role.error} thing="role" onRetry={() => void role.refetch()} />
       ) : (
         <>
-          <PageHeader>
-            <div className="row-wrap">
+          <div className="between">
+            <PageHeader>
               <PageHeaderTitle>{role.data?.name ?? <Skeleton />}</PageHeaderTitle>
-              {role.data?.builtin && <Badge variant="neutral">Built in</Badge>}
-            </div>
-            <PageHeaderDescription>
-              {role.data?.builtin
-                ? 'What sewa needs on every host.'
-                : 'Packages and mise tools for the hosts with this role. Give it to a host on the host page.'}
-            </PageHeaderDescription>
-          </PageHeader>
-          <Card className="form-page role-form">
+              <PageHeaderDescription>
+                {role.data?.builtin
+                  ? 'What sewa needs on every host.'
+                  : 'Packages and mise tools for the hosts with this role. Give it to a host on the host page.'}
+              </PageHeaderDescription>
+            </PageHeader>
+            {role.data && (
+              <Lifecycle
+                status={
+                  <Badge variant="neutral">
+                    {role.data.builtin ? 'Built in' : `Given to ${plural(role.data.hosts.length, 'host')}`}
+                  </Badge>
+                }
+              />
+            )}
+          </div>
+          <Card className="detail-tabs role-form" data-fill="false">
             {!role.data ? (
               <Skeleton />
             ) : role.data.builtin ? (
@@ -60,7 +78,7 @@ export function RolePage() {
   );
 }
 
-function namesOf(roles: Role[] | undefined, self: string, kind: Item['kind']): string[] {
+export function namesOf(roles: Role[] | undefined, self: string | null, kind: Item['kind']): string[] {
   const names = new Set<string>();
   for (const role of roles ?? []) {
     if (role.id === self) continue;
@@ -78,8 +96,55 @@ function BuiltinRole({ role }: { role: Role }) {
   );
 }
 
-function RoleForm({ role }: { role: Role }) {
+export function RoleSteps({
+  self,
+  name,
+  onName,
+  nameError,
+  items,
+  onItems,
+}: {
+  self: string | null;
+  name: string;
+  onName: (name: string) => void;
+  nameError: string | undefined;
+  items: Item[];
+  onItems: (items: Item[]) => void;
+}) {
   const roles = useQuery(rolesQuery);
+  return (
+    <ol className="form-steps">
+      <li data-done={(name.trim() && !nameError) || undefined}>
+        <p className="t-caps">Role</p>
+        <FormField
+          name="name"
+          label="Name"
+          autoComplete="off"
+          placeholder="base"
+          maxLength={63}
+          value={name}
+          hint="Letters, digits, dots, dashes or underscores."
+          onChange={(event) => onName(event.target.value)}
+          error={nameError}
+        />
+      </li>
+      <li data-done={items.length > 0 || undefined}>
+        <p className="t-caps">Items</p>
+        <ItemChips
+          value={items}
+          onChange={onItems}
+          withOs
+          suggestions={{
+            package: namesOf(roles.data, self, 'package'),
+            tool: namesOf(roles.data, self, 'tool'),
+          }}
+        />
+      </li>
+    </ol>
+  );
+}
+
+function RoleForm({ role }: { role: Role }) {
   const [saved, setSaved] = useState(role);
   const [name, setName] = useState(role.name);
   const [items, setItems] = useState(role.items);
@@ -89,14 +154,8 @@ function RoleForm({ role }: { role: Role }) {
   const diff = diffItems(saved.items, items);
   const renamed = name.trim() !== saved.name;
   const dirty = renamed || diffSize(diff) > 0;
-  const nameProblem = !name.trim()
-    ? 'Enter a name.'
-    : !NAME.test(name.trim())
-      ? 'Use up to 63 letters, digits, dots, dashes or underscores.'
-      : errorCode(failure) === 'name_taken'
-        ? 'A role has this name. Choose another.'
-        : undefined;
-  const ready = !nameProblem && items.every((item) => itemProblem(item) === null);
+  const nameError = nameProblem(name, failure);
+  const ready = !nameError && items.every((item) => itemProblem(item) === null);
 
   function discard() {
     setName(saved.name);
@@ -121,36 +180,18 @@ function RoleForm({ role }: { role: Role }) {
   return (
     <Form onSubmit={submit} noValidate>
       <div className="form-body">
-        <p className="t-caps">Configuration</p>
         {failure !== null && errorCode(failure) !== 'name_taken' && <ErrorAlert error={failure} thing="role" />}
-        <ol className="form-steps">
-          <li data-done={!nameProblem || undefined}>
-            <p className="t-caps">Role</p>
-            <FormField
-              name="name"
-              label="Name"
-              autoComplete="off"
-              value={name}
-              hint="Letters, digits, dots, dashes or underscores."
-              onChange={(event) => {
-                setName(event.target.value);
-                if (errorCode(failure) === 'name_taken') setFailure(null);
-              }}
-              error={nameProblem}
-            />
-          </li>
-          <li data-done={items.length > 0 || undefined}>
-            <p className="t-caps">Items</p>
-            <ItemTable
-              value={items}
-              onChange={setItems}
-              suggestions={{
-                package: namesOf(roles.data, role.id, 'package'),
-                tool: namesOf(roles.data, role.id, 'tool'),
-              }}
-            />
-          </li>
-        </ol>
+        <RoleSteps
+          self={role.id}
+          name={name}
+          onName={(next) => {
+            setName(next);
+            if (errorCode(failure) === 'name_taken') setFailure(null);
+          }}
+          nameError={nameError}
+          items={items}
+          onItems={setItems}
+        />
       </div>
       <FormActions sticky tone={dirty ? 'warning' : 'neutral'} message={message}>
         {dirty && (

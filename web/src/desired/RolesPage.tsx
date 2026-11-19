@@ -1,10 +1,6 @@
 import {
   Badge,
   Button,
-  EmptyState,
-  EmptyStateActions,
-  EmptyStateDescription,
-  EmptyStateTitle,
   PageHeader,
   PageHeaderTitle,
   Table,
@@ -22,8 +18,8 @@ import { useState } from 'react';
 
 import { type Role, rolesQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
+import { countOf, ListEmpty, ListFilters, NoMatchRow } from '../components/ListFilters';
 import { SkeletonRows } from '../components/SkeletonRows';
-import { AddRoleDialog } from './AddRoleDialog';
 
 const COLUMNS = 4;
 
@@ -36,11 +32,15 @@ export function roleOs(role: Role): string {
 
 export function RolesPage() {
   const roles = useQuery(rolesQuery);
-  const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState('');
+  const typed = query.trim().toLowerCase();
+  const shown = (roles.data ?? []).filter((role) => role.name.toLowerCase().includes(typed));
   const add = (
-    <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
-      <Plus className="icon" aria-hidden="true" />
-      Add a role
+    <Button size="sm" variant="primary" asChild>
+      <Link to="/roles/new">
+        <Plus className="icon" aria-hidden="true" />
+        Add a role
+      </Link>
     </Button>
   );
 
@@ -51,16 +51,18 @@ export function RolesPage() {
       </PageHeader>
       {roles.isError && <ErrorAlert error={roles.error} onRetry={() => void roles.refetch()} />}
       {roles.isSuccess && roles.data.length === 0 ? (
-        <EmptyState variant="first-run">
-          <EmptyStateTitle>No roles yet</EmptyStateTitle>
-          <EmptyStateDescription>
-            Add a role, give it packages and mise tools, then give it to hosts.
-          </EmptyStateDescription>
-          <EmptyStateActions>{add}</EmptyStateActions>
-        </EmptyState>
+        <ListEmpty title="No roles yet">Add a role, give it packages and mise tools, then give it to hosts.</ListEmpty>
       ) : (
         !(roles.isError && !roles.data) && (
-          <TableFrame>
+          <>
+            <ListFilters
+              thing="roles"
+              query={query}
+              onQuery={setQuery}
+              filtering={typed !== ''}
+              onClear={() => setQuery('')}
+            />
+          <TableFrame data-fill="false">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -73,8 +75,10 @@ export function RolesPage() {
               <TableBody>
                 {roles.isPending ? (
                   <SkeletonRows columns={COLUMNS} />
+                ) : shown.length === 0 ? (
+                  <NoMatchRow thing="roles" columns={COLUMNS} />
                 ) : (
-                  roles.data?.map((role) => (
+                  shown.map((role) => (
                     <TableRow key={role.id}>
                       <TableCell>
                         <div className="row-wrap">
@@ -93,12 +97,12 @@ export function RolesPage() {
               </TableBody>
             </Table>
             {roles.data && (
-              <div className="table-footer">{roles.data.length === 1 ? '1 role' : `${roles.data.length} roles`}</div>
+              <div className="table-footer">{countOf(shown.length, roles.data.length, 'roles')}</div>
             )}
           </TableFrame>
+          </>
         )
       )}
-      <AddRoleDialog open={adding} onOpenChange={setAdding} />
     </>
   );
 }
