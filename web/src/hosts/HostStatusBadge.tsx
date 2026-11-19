@@ -9,7 +9,7 @@ const tones: Record<HostStatus, StatusTone> = {
   disabled: 'neutral',
 };
 
-const labels: Record<HostStatus, string> = {
+export const hostStatusLabels: Record<HostStatus, string> = {
   waiting: 'Waiting',
   connected: 'Connected',
   disconnected: 'Disconnected',
@@ -18,8 +18,8 @@ const labels: Record<HostStatus, string> = {
 
 export function HostStatusBadge({ status }: { status: HostStatus }) {
   return (
-    <StatusBadge tone={tones[status]} pulse={status === 'disconnected'}>
-      {labels[status]}
+    <StatusBadge tone={tones[status]}>
+      {hostStatusLabels[status]}
     </StatusBadge>
   );
 }
