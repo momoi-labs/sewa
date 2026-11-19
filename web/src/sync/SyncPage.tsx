@@ -217,9 +217,9 @@ function SyncState({ sync }: { sync: SyncEntry }) {
   const steps = hosts.map((host) => ({ key: host.id, label: host.name, state: stepState(host, applying) }));
   const finished = steps.filter((step) => step.state !== 'pending' && step.state !== 'running').length;
   return (
-    <div className="row-wrap">
+    <div className="row sync-state">
       {badge}
-      <StepBar label="Apply progress" steps={steps} />
+      <StepBar label={`${statusNames[sync.status]}: ${finished} of ${hosts.length} hosts done`} steps={steps} />
       <span className="muted">
         {finished} of {hosts.length}
       </span>

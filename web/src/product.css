@@ -159,6 +159,8 @@
 
 .wide-form.form-page { max-width: none; }
 
+.sync-state > .step-bar { inline-size: calc(var(--spacing-4xl) * 2); }
+
 /* The Plans step of a sync, by package: a search and a host filter above
    one table per change, in the role page's table style. On a phone each
    row is a card. See Exceptions in docs/kiso.md. */
