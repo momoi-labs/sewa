@@ -5,14 +5,16 @@ import {
   AlertTitle,
   Button,
   Card,
-  CardContent,
+  Form,
+  FormActions,
   PageHeader,
   PageHeaderDescription,
   PageHeaderTitle,
   Skeleton,
   Spinner,
-  StepList,
-  type StepItem,
+  StatusBadge,
+  StepBar,
+  type StepState,
   Table,
   TableBody,
   TableCell,
@@ -23,9 +25,9 @@ import {
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useState } from 'react';
+import { type FormEvent, useState } from 'react';
 
-import { createSync, hostsQuery, syncEditsQuery, syncsQuery } from '../api';
+import { createSync, hostsQuery, type SyncEntry, type SyncHost, syncEditsQuery, syncQuery, syncsQuery } from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatDateTime } from '../format';
 import { byName } from './byPackage';
@@ -41,10 +43,10 @@ export function SyncPage() {
   return (
     <>
       <PageHeader>
-        <PageHeaderTitle>Sync</PageHeaderTitle>
+        <PageHeaderTitle>New sync</PageHeaderTitle>
         <PageHeaderDescription>
-          Edits change the desired state only. A sync brings the hosts you pick to it: each host plans, you sign
-          the plans with a passkey, and each host applies its own.
+          Pick the hosts to bring to the desired state. Each host plans, you sign the plans with a passkey, and each
+          host applies its own.
         </PageHeaderDescription>
       </PageHeader>
       {running && (
@@ -60,11 +62,7 @@ export function SyncPage() {
           </AlertContent>
         </Alert>
       )}
-      <Card>
-        <CardContent>
-          <NewSync />
-        </CardContent>
-      </Card>
+      <NewSync />
       <RecentSyncs />
     </>
   );
@@ -93,72 +91,63 @@ function NewSync() {
   const since = edits.data?.since;
   const count = enrolled.filter((host) => chosen.has(host.id)).length;
 
-  const steps: StepItem[] = [
-    {
-      key: 'edits',
-      label: 'Edits since the last sync',
-      state: 'done',
-      meta: edits.data ? (list.length ? plural(list.length, 'edit') : 'None') : undefined,
-      detail: edits.isPending ? (
-        <Skeleton />
-      ) : list.length === 0 ? (
-        <p className="muted">
-          {since ? `No edits since the sync of ${formatDateTime(since)}.` : 'No edits yet.'} A sync still brings back
-          a host that drifted.
-        </p>
-      ) : (
-        <ul className="stack-sm">
-          {list.slice(-SHOWN_EDITS).map((edit) => (
-            <li key={edit.id}>{describeEdit(edit)}</li>
-          ))}
-          {list.length > SHOWN_EDITS && <li className="muted">and {plural(list.length - SHOWN_EDITS, 'earlier edit')}</li>}
-        </ul>
-      ),
-    },
-    {
-      key: 'hosts',
-      label: 'Pick hosts',
-      state: 'running',
-      meta: hosts.data ? `${count} of ${enrolled.length}` : undefined,
-      detail: hosts.isPending ? (
-        <Skeleton />
-      ) : enrolled.length === 0 ? (
-        <p className="muted">
-          No host is enrolled yet. <Link to="/">Add a host</Link> first.
-        </p>
-      ) : (
-        <HostPicker
-          hosts={enrolled}
-          chosen={chosen}
-          onChange={setPicked}
-          action={
-            <Button
-              type="button"
-              variant="primary"
-              disabled={count === 0}
-              aria-busy={mutation.isPending}
-              onClick={() => {
-                if (!mutation.isPending) mutation.mutate();
-              }}
-            >
-              {mutation.isPending && <Spinner size="sm" />}
-              Plan {plural(count, 'host')}
-            </Button>
-          }
-        />
-      ),
-    },
-    { key: 'plans', label: 'Plans', state: 'pending' },
-    { key: 'sign', label: 'Sign', state: 'pending' },
-    { key: 'apply', label: 'Apply', state: 'pending' },
-  ];
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (count > 0 && !mutation.isPending) mutation.mutate();
+  }
 
   return (
-    <div className="stack">
-      {edits.isError && <ErrorAlert error={edits.error} thing="edits" onRetry={() => void edits.refetch()} />}
-      {mutation.isError && <ErrorAlert error={mutation.error} thing="sync" />}
-      <StepList label="Sync progress" steps={steps} />
-    </div>
+    <Card className="form-page wide-form" data-fill="false">
+      <Form onSubmit={submit} noValidate>
+        <div className="form-body">
+          {edits.isError && <ErrorAlert error={edits.error} thing="edits" onRetry={() => void edits.refetch()} />}
+          {mutation.isError && <ErrorAlert error={mutation.error} thing="sync" />}
+          <ol className="form-steps">
+            <li data-done>
+              <p className="t-caps">Edits since the last sync</p>
+              {edits.isPending ? (
+                <Skeleton />
+              ) : list.length === 0 ? (
+                <p className="muted">
+                  {since ? `No edits since the sync of ${formatDateTime(since)}.` : 'No edits yet.'} A sync still
+                  brings back a host that drifted.
+                </p>
+              ) : (
+                <ul className="stack-sm">
+                  {list.slice(-SHOWN_EDITS).map((edit) => (
+                    <li key={edit.id}>{describeEdit(edit)}</li>
+                  ))}
+                  {list.length > SHOWN_EDITS && (
+                    <li className="muted">and {plural(list.length - SHOWN_EDITS, 'earlier edit')}</li>
+                  )}
+                </ul>
+              )}
+            </li>
+            <li data-done={count > 0 || undefined}>
+              <p className="t-caps">Hosts</p>
+              {hosts.isPending ? (
+                <Skeleton />
+              ) : enrolled.length === 0 ? (
+                <p className="muted">
+                  No host is enrolled yet. <Link to="/">Add a host</Link> first.
+                </p>
+              ) : (
+                <HostPicker hosts={enrolled} chosen={chosen} onChange={setPicked} action={null} />
+              )}
+            </li>
+          </ol>
+        </div>
+        <FormActions sticky message={`${count} of ${enrolled.length} hosts selected`}>
+          <Button type="button" size="sm" onClick={() => void navigate({ to: '/' })}>
+            Cancel
+          </Button>
+          <Button type="submit" size="sm" variant="primary" disabled={count === 0} aria-busy={mutation.isPending}>
+            {mutation.isPending && <Spinner size="sm" />}
+            Plan {plural(count, 'host')}
+          </Button>
+        </FormActions>
+      </Form>
+    </Card>
   );
 }
 
@@ -170,7 +159,7 @@ function RecentSyncs() {
   return (
     <section className="stack-sm">
       <h2 className="t-caps">Recent syncs</h2>
-      <TableFrame>
+      <TableFrame data-fill="false">
         <Table aria-label="Recent syncs">
           <TableHeader>
             <TableRow>
@@ -190,12 +179,50 @@ function RecentSyncs() {
                 </TableCell>
                 <TableCell>{sync.created_by}</TableCell>
                 <TableCell>{sync.host_count}</TableCell>
-                <TableCell>{statusNames[sync.status]}</TableCell>
+                <TableCell>
+                  <SyncState sync={sync} />
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
+        <div className="table-footer">{plural(syncs.data.length, 'sync')}</div>
       </TableFrame>
     </section>
+  );
+}
+
+function stepState(host: SyncHost, applying: boolean): StepState {
+  if (host.step === 'applied' || host.step === 'in_sync') return 'done';
+  if (host.step === 'skipped') return 'skipped';
+  if (host.step === 'failed' || host.step === 'replan') return 'failed';
+  if (host.step === 'waiting') return applying ? 'running' : 'pending';
+  return applying ? 'pending' : 'running';
+}
+
+function SyncState({ sync }: { sync: SyncEntry }) {
+  const done = sync.status === 'done';
+  const detail = useQuery({ ...syncQuery(sync.id), enabled: !done });
+  const badge = (
+    <StatusBadge
+      tone={done ? 'success' : 'neutral'}
+      pulse={sync.status === 'planning' || sync.status === 'applying'}
+    >
+      {statusNames[sync.status]}
+    </StatusBadge>
+  );
+  const hosts = detail.data?.hosts;
+  if (done || !hosts?.length) return badge;
+  const applying = sync.status === 'applying';
+  const steps = hosts.map((host) => ({ key: host.id, label: host.name, state: stepState(host, applying) }));
+  const finished = steps.filter((step) => step.state !== 'pending' && step.state !== 'running').length;
+  return (
+    <div className="row-wrap">
+      {badge}
+      <StepBar label="Apply progress" steps={steps} />
+      <span className="muted">
+        {finished} of {hosts.length}
+      </span>
+    </div>
   );
 }
