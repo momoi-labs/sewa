@@ -277,8 +277,11 @@ Returns one role in the same shape.
 
 ### `POST /api/roles`
 
-Takes `{"name": "base"}` and creates an empty role. Returns `201` with the
-role. Roles cannot be deleted.
+Takes `{"name": "base"}` and creates an empty role, or
+`{"name": "base", "items": [...]}` with items as in the `PUT` below.
+Returns `201` with the role. `400` `invalid_name`, `invalid_item`,
+`duplicate_item`, or `too_many_items`; `409` `name_taken`. Records
+`role.created` with the name and the items. Roles cannot be deleted.
 
 ### `PUT /api/roles/{id}`
 

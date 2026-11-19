@@ -20,6 +20,8 @@ const ITEM_LIMIT: usize = 500;
 #[derive(Debug, Deserialize)]
 pub struct NewRole {
     pub name: String,
+    #[serde(default)]
+    pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -136,6 +138,7 @@ pub async fn create(
     if !hosts::valid_name(&new.name) {
         return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_name"));
     }
+    let specs = specs(&new.items)?;
     let mut transaction = state.pool.begin().await?;
     let row: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
         "INSERT INTO roles (name) VALUES ($1)
@@ -146,6 +149,8 @@ pub async fn create(
     .fetch_optional(&mut *transaction)
     .await?;
     let (id, created_at) = row.ok_or(Failure::new(StatusCode::CONFLICT, "name_taken"))?;
+    insert_items(&mut transaction, id, &specs).await?;
+    let items: Vec<Item> = specs.iter().map(|(key, spec)| item(key, spec)).collect();
     events::record_about(
         &mut transaction,
         About {
@@ -153,7 +158,7 @@ pub async fn create(
             ..About::default()
         },
         events::ROLE_CREATED,
-        serde_json::json!({ "name": new.name }),
+        serde_json::json!({ "name": new.name, "items": items }),
     )
     .await?;
     transaction.commit().await?;
@@ -164,7 +169,7 @@ pub async fn create(
             name: new.name,
             builtin: false,
             created_at,
-            items: Vec::new(),
+            items,
             hosts: Vec::new(),
         }),
     ))
@@ -215,6 +220,46 @@ pub fn diff(before: &BTreeMap<Key, Spec>, after: &BTreeMap<Key, Spec>) -> Diff {
     diff
 }
 
+fn specs(items: &[Item]) -> ApiResult<BTreeMap<Key, Spec>> {
+    if items.len() > ITEM_LIMIT {
+        return Err(Failure::new(StatusCode::BAD_REQUEST, "too_many_items"));
+    }
+    let mut specs = BTreeMap::new();
+    for item in items {
+        if !item.is_valid() {
+            return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_item"));
+        }
+        let spec = Spec {
+            version: item.version.clone(),
+            os: item.os.clone(),
+        };
+        if specs.insert((item.kind, item.name.clone()), spec).is_some() {
+            return Err(Failure::new(StatusCode::BAD_REQUEST, "duplicate_item"));
+        }
+    }
+    Ok(specs)
+}
+
+async fn insert_items(
+    connection: &mut sqlx::PgConnection,
+    role: Uuid,
+    specs: &BTreeMap<Key, Spec>,
+) -> ApiResult<()> {
+    for ((kind, name), spec) in specs {
+        sqlx::query(
+            "INSERT INTO role_items (role_id, kind, name, version, os) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(role)
+        .bind(kind.as_str())
+        .bind(name)
+        .bind(&spec.version)
+        .bind(&spec.os)
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn save(
     State(state): State<AppState>,
     Extension(identity): Extension<Identity>,
@@ -225,22 +270,7 @@ pub async fn save(
     if !hosts::valid_name(&saved.name) {
         return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_name"));
     }
-    if saved.items.len() > ITEM_LIMIT {
-        return Err(Failure::new(StatusCode::BAD_REQUEST, "too_many_items"));
-    }
-    let mut after = BTreeMap::new();
-    for item in &saved.items {
-        if !item.is_valid() {
-            return Err(Failure::new(StatusCode::BAD_REQUEST, "invalid_item"));
-        }
-        let spec = Spec {
-            version: item.version.clone(),
-            os: item.os.clone(),
-        };
-        if after.insert((item.kind, item.name.clone()), spec).is_some() {
-            return Err(Failure::new(StatusCode::BAD_REQUEST, "duplicate_item"));
-        }
-    }
+    let after = specs(&saved.items)?;
     let mut transaction = state.pool.begin().await?;
     let row: Option<(String, bool)> =
         sqlx::query_as("SELECT name, builtin FROM roles WHERE id = $1 FOR UPDATE")
@@ -282,18 +312,7 @@ pub async fn save(
         .bind(id)
         .execute(&mut *transaction)
         .await?;
-    for ((kind, item_name), spec) in &after {
-        sqlx::query(
-            "INSERT INTO role_items (role_id, kind, name, version, os) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(id)
-        .bind(kind.as_str())
-        .bind(item_name)
-        .bind(&spec.version)
-        .bind(&spec.os)
-        .execute(&mut *transaction)
-        .await?;
-    }
+    insert_items(&mut transaction, id, &after).await?;
     if !diff.is_empty() || saved.name != name {
         let mut data = serde_json::json!({
             "by": identity.login,
