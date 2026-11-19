@@ -4,6 +4,8 @@ import {
   EmptyState,
   EmptyStateDescription,
   EmptyStateTitle,
+  Form,
+  FormActions,
   KV,
   KVKey,
   KVValue,
@@ -26,195 +28,195 @@ import {
 } from '@momoi-labs/kiso-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useState } from 'react';
+import { type FormEvent, type ReactNode, useState } from 'react';
 
-import { createSync, editHost, type Host, type HostEdit, type HostState, ignoreDrift, rolesQuery } from '../api';
+import {
+  createSync,
+  editHost,
+  type Host,
+  type HostEdit,
+  type HostState,
+  ignoreDrift,
+  type Item,
+  type Named,
+  rolesQuery,
+} from '../api';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { Unknown } from '../components/Unknown';
 import { formatDateTime } from '../format';
 import { AdoptDialog } from './AdoptDialog';
-import { ItemForm } from './ItemForm';
-import { kindNames } from './items';
+import { ItemChips } from './ItemChips';
+import { itemKey, itemProblem } from './items';
 import { PlanView } from './PlanView';
+import { namesOf } from './RolePage';
 
-function useHostEdit(host: Host) {
+const adjustmentProblem = (item: Item) => (item.version === 'absent' ? null : itemProblem(item));
+
+function chipsOf(state: HostState): Item[] {
+  return state.adjustments.map((adjustment) => ({
+    kind: adjustment.kind,
+    name: adjustment.name,
+    version: adjustment.action === 'set' ? adjustment.version : 'absent',
+    os: null,
+  }));
+}
+
+function editsOf(state: HostState, roles: Named[], items: Item[]): HostEdit[] {
+  const edits: HostEdit[] = [];
+  const before = new Set(state.roles.map((role) => role.id));
+  const after = new Set(roles.map((role) => role.id));
+  for (const role of roles) if (!before.has(role.id)) edits.push({ op: 'host_role_add', role: role.id });
+  for (const role of state.roles) if (!after.has(role.id)) edits.push({ op: 'host_role_remove', role: role.id });
+  const saved = new Map(chipsOf(state).map((item) => [itemKey(item), item]));
+  const kept = new Set(items.map(itemKey));
+  for (const item of items) {
+    if (saved.get(itemKey(item))?.version === item.version) continue;
+    const { kind, name, version } = item;
+    edits.push(version === 'absent' ? { op: 'host_item_remove', kind, name } : { op: 'host_item_set', kind, name, version });
+  }
+  for (const item of saved.values())
+    if (!kept.has(itemKey(item))) edits.push({ op: 'host_item_reset', kind: item.kind, name: item.name });
+  return edits;
+}
+
+export function HostDesired({ host, state }: { host: Host; state: HostState }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  return useMutation({
-    mutationFn: (edit: HostEdit) => editHost(host.id, [edit]),
-    onSuccess: async (state) => {
-      queryClient.setQueryData(['hosts', host.id, 'state'], state);
+  const roles = useQuery(rolesQuery);
+  const [draftRoles, setDraftRoles] = useState<Named[] | null>(null);
+  const [draftItems, setDraftItems] = useState<Item[] | null>(null);
+  const [chosen, setChosen] = useState('');
+  const given = draftRoles ?? state.roles;
+  const items = draftItems ?? chipsOf(state);
+  const edits = editsOf(state, given, items);
+  const dirty = edits.length > 0;
+  const ready = items.every((item) => adjustmentProblem(item) === null);
+
+  const save = useMutation({
+    mutationFn: () => editHost(host.id, edits),
+    onSuccess: async (next) => {
+      queryClient.setQueryData(['hosts', host.id, 'state'], next);
+      setDraftRoles(null);
+      setDraftItems(null);
       await Promise.all([['roles'], ['syncs']].map((queryKey) => queryClient.invalidateQueries({ queryKey })));
       toast('success', `${host.name} saved`, 'Sync the host to apply it.');
     },
   });
-}
 
-export function HostDesired({ host, state }: { host: Host; state: HostState }) {
-  const edit = useHostEdit(host);
-  const roles = useQuery(rolesQuery);
-  const [chosen, setChosen] = useState('');
   const builtin = new Set((roles.data ?? []).filter((role) => role.builtin).map((role) => role.id));
-  const have = new Set(state.roles.map((role) => role.id));
+  const have = new Set(given.map((role) => role.id));
   const others = (roles.data ?? []).filter((role) => !have.has(role.id) && !role.builtin);
 
-  return (
-    <div className="stack">
-      <p className="muted">Edits save at once. The host gets them at its next sync.</p>
-      {edit.isError && <ErrorAlert error={edit.error} />}
+  function discard() {
+    setDraftRoles(null);
+    setDraftItems(null);
+    save.reset();
+  }
 
-      <h3 className="t-h3">Roles</h3>
-      {state.roles.length === 0 ? (
-        <p className="muted">This host has no roles.</p>
-      ) : (
-        <TableFrame frame="none">
-          <Table aria-label={`Roles of ${host.name}`}>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Role</TableHead>
-                <TableHead aria-label="Actions" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {state.roles.map((role) => (
-                <TableRow key={role.id}>
-                  <TableCell>
-                    <div className="row-wrap">
-                      <Link to="/roles/$roleId" params={{ roleId: role.id }}>
-                        {role.name}
-                      </Link>
-                      {builtin.has(role.id) && <Badge variant="neutral">Built in</Badge>}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {!builtin.has(role.id) && (
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (dirty && ready && !save.isPending) save.mutate();
+  }
+
+  function give() {
+    const role = others.find((role) => role.id === chosen);
+    if (!role) return;
+    setDraftRoles([...given, { id: role.id, name: role.name }]);
+    setChosen('');
+  }
+
+  let message: ReactNode;
+  if (dirty)
+    message = (
+      <>
+        <strong>Unsaved changes.</strong>
+      </>
+    );
+  else message = 'Saved. The host gets it at its next sync.';
+
+  return (
+    <Form onSubmit={submit} noValidate>
+      <div className="form-body">
+        {save.isError && <ErrorAlert error={save.error} />}
+        <ol className="form-steps">
+          <li data-done>
+            <p className="t-caps">Roles</p>
+            {given.length === 0 ? (
+              <p className="muted">This host has no roles.</p>
+            ) : (
+              <ul className="roles-list" aria-label={`Roles of ${host.name}`}>
+                {given.map((role) => (
+                  <li key={role.id} className="row-wrap">
+                    <Link to="/roles/$roleId" params={{ roleId: role.id }}>
+                      {role.name}
+                    </Link>
+                    {builtin.has(role.id) ? (
+                      <Badge variant="neutral">Built in</Badge>
+                    ) : (
                       <Button
+                        type="button"
                         size="sm"
                         variant="ghost"
                         aria-label={`Take away ${role.name}`}
-                        disabled={edit.isPending}
-                        onClick={() => edit.mutate({ op: 'host_role_remove', role: role.id })}
+                        onClick={() => setDraftRoles(given.filter((other) => other.id !== role.id))}
                       >
                         Take away
                       </Button>
                     )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      )}
-      {others.length > 0 && (
-        <form
-          className="row-wrap"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!chosen) return;
-            edit.mutate({ op: 'host_role_add', role: chosen });
-            setChosen('');
-          }}
-        >
-          <Select value={chosen} onValueChange={setChosen}>
-            <SelectTrigger aria-label="Role to give">
-              <SelectValue placeholder="Choose a role" />
-            </SelectTrigger>
-            <SelectContent>
-              {others.map((role) => (
-                <SelectItem key={role.id} value={role.id}>
-                  {role.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button type="submit" disabled={!chosen || edit.isPending}>
-            Give role
+                  </li>
+                ))}
+              </ul>
+            )}
+            {others.length > 0 && (
+              <div className="row-wrap">
+                <Select value={chosen} onValueChange={setChosen}>
+                  <SelectTrigger aria-label="Role to give">
+                    <SelectValue placeholder="Choose a role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {others.map((role) => (
+                      <SelectItem key={role.id} value={role.id}>
+                        {role.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button type="button" disabled={!chosen} onClick={give}>
+                  Give role
+                </Button>
+              </div>
+            )}
+          </li>
+          <li data-done>
+            <p className="t-caps">Adjustments</p>
+            <p className="muted">
+              An adjustment adds an item to this host, changes its version, or leaves out an item of a role.
+            </p>
+            <ItemChips
+              value={items}
+              onChange={setDraftItems}
+              problem={adjustmentProblem}
+              withAbsent
+              suggestions={{
+                package: namesOf(roles.data, null, 'package'),
+                tool: namesOf(roles.data, null, 'tool'),
+              }}
+            />
+          </li>
+        </ol>
+      </div>
+      <FormActions sticky tone={dirty ? 'warning' : 'neutral'} message={message}>
+        {dirty && (
+          <Button type="button" size="sm" onClick={discard}>
+            Discard
           </Button>
-        </form>
-      )}
-
-      <h3 className="t-h3">Adjustments</h3>
-      <p className="muted">
-        An adjustment adds an item to this host, changes its version, or leaves out an item of a role.
-      </p>
-      {state.adjustments.length > 0 && (
-        <TableFrame frame="none">
-          <Table aria-label={`Adjustments of ${host.name}`}>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Item</TableHead>
-                <TableHead>Kind</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead aria-label="Actions" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {state.adjustments.map((adjustment) => (
-                <TableRow key={`${adjustment.kind}:${adjustment.name}`}>
-                  <TableCell className="mono">{adjustment.name}</TableCell>
-                  <TableCell>{kindNames[adjustment.kind]}</TableCell>
-                  <TableCell className="mono">
-                    {adjustment.action === 'set' ? adjustment.version : <span className="muted">left out</span>}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`Reset ${adjustment.name}`}
-                      disabled={edit.isPending}
-                      onClick={() =>
-                        edit.mutate({ op: 'host_item_reset', kind: adjustment.kind, name: adjustment.name })
-                      }
-                    >
-                      Reset
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      )}
-      <ItemForm submitLabel="Add" onAdd={(item) => edit.mutateAsync({ op: 'host_item_set', ...item })} />
-
-      <h3 className="t-h3">Desired items</h3>
-      {state.items.length === 0 ? (
-        <p className="muted">This host has no desired items.</p>
-      ) : (
-        <TableFrame frame="none">
-          <Table aria-label={`Desired items of ${host.name}`}>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Item</TableHead>
-                <TableHead>Kind</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead aria-label="Actions" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {state.items.map((item) => (
-                <TableRow key={`${item.kind}:${item.name}`}>
-                  <TableCell className="mono">{item.name}</TableCell>
-                  <TableCell>{kindNames[item.kind]}</TableCell>
-                  <TableCell className="mono">{item.version}</TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`Leave out ${item.name}`}
-                      disabled={edit.isPending}
-                      onClick={() => edit.mutate({ op: 'host_item_remove', kind: item.kind, name: item.name })}
-                    >
-                      Leave out
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      )}
-    </div>
+        )}
+        <Button type="submit" size="sm" variant="primary" disabled={!dirty || !ready} aria-busy={save.isPending}>
+          {save.isPending && <Spinner size="sm" />}
+          Save
+        </Button>
+      </FormActions>
+    </Form>
   );
 }
 

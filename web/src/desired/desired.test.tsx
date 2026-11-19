@@ -175,13 +175,13 @@ describe('groupItems', () => {
   });
 });
 
-describe('host roles', () => {
-  it('gives a role to a host at once', async () => {
+describe('host desired state', () => {
+  it('saves the drafted roles and adjustments together', async () => {
     const user = userEvent.setup();
     const other: Role = { ...role, id: '44444444-4444-4444-8444-444444444444', name: 'dev', hosts: [] };
     const state: HostState = {
       roles: [{ id: builtin.id, name: builtin.name }],
-      adjustments: [],
+      adjustments: [{ kind: 'package', name: 'sl', action: 'remove' }],
       items: builtin.items,
       config: '',
       health: null,
@@ -194,23 +194,37 @@ describe('host roles', () => {
       'GET /api/roles': { status: 200, body: [builtin, other] },
       [`POST /api/hosts/${host.id}/edits`]: {
         status: 200,
-        body: { ...state, roles: [...state.roles, { id: other.id, name: other.name }] },
+        body: {
+          ...state,
+          roles: [...state.roles, { id: other.id, name: other.name }],
+          adjustments: [{ kind: 'package', name: 'tmux', action: 'set', version: 'latest' }],
+        },
       },
     });
     renderRoute(`/hosts/${host.id}`);
     await user.click(await screen.findByRole('tab', { name: 'Desired state' }));
-    const table = await screen.findByRole('table', { name: 'Roles of build-1' });
-    expect(within(table).getByText('Built in')).toBeInTheDocument();
-    expect(within(table).queryByRole('button', { name: 'Take away sewa' })).toBeNull();
+    const list = await screen.findByRole('list', { name: 'Roles of build-1' });
+    expect(within(list).getByText('Built in')).toBeInTheDocument();
+    expect(within(list).queryByRole('button', { name: 'Take away sewa' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     await user.click(screen.getByRole('combobox', { name: 'Role to give' }));
     await user.click(await screen.findByRole('option', { name: 'dev' }));
     await user.click(screen.getByRole('button', { name: 'Give role' }));
+    await user.click(screen.getByRole('button', { name: 'Remove sl' }));
+    await user.type(screen.getByLabelText('Packages'), 'tmux{Enter}');
+    expect(screen.getByText('Unsaved changes.')).toBeInTheDocument();
+    expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
-        edits: [{ op: 'host_role_add', role: other.id }],
+        edits: [
+          { op: 'host_role_add', role: other.id },
+          { op: 'host_item_set', kind: 'package', name: 'tmux', version: 'latest' },
+          { op: 'host_item_reset', kind: 'package', name: 'sl' },
+        ],
       }),
     );
-    expect(await screen.findByRole('link', { name: 'dev' })).toBeInTheDocument();
+    expect(await screen.findByText('Saved. The host gets it at its next sync.')).toBeInTheDocument();
   });
 });
 
