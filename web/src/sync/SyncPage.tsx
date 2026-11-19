@@ -195,6 +195,7 @@ function RecentSyncs() {
 function stepState(host: SyncHost, applying: boolean): StepState {
   if (host.step === 'applied' || host.step === 'in_sync') return 'done';
   if (host.step === 'skipped') return 'skipped';
+  if (host.step === 'applying') return 'running';
   if (host.step === 'failed' || host.step === 'replan') return 'failed';
   if (host.step === 'waiting') return applying ? 'running' : 'pending';
   return applying ? 'pending' : 'running';

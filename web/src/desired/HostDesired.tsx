@@ -138,6 +138,7 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
     <Form onSubmit={submit} noValidate>
       <div className="form-body">
         {save.isError && <ErrorAlert error={save.error} />}
+        <fieldset className="form-lock" disabled={save.isPending}>
         <ol className="form-steps">
           <li data-done>
             <p className="t-caps">Roles</p>
@@ -204,10 +205,11 @@ export function HostDesired({ host, state }: { host: Host; state: HostState }) {
             />
           </li>
         </ol>
+        </fieldset>
       </div>
       <FormActions sticky tone={dirty ? 'warning' : 'neutral'} message={message}>
         {dirty && (
-          <Button type="button" size="sm" onClick={discard}>
+          <Button type="button" size="sm" onClick={discard} disabled={save.isPending}>
             Discard
           </Button>
         )}

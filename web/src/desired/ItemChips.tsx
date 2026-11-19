@@ -145,7 +145,7 @@ function ItemBox({
                       editLabel={`Edit ${item.name} OS, currently ${item.os}`}
                       confirmLabel={`Confirm ${item.name} OS`}
                       onCommit={(text) => {
-                        const os = text.trim() === '' ? null : parseOs(`os=${text}`);
+                        const os = text.trim() === '' ? null : parseOs(text);
                         if (os !== undefined) update(item, { os });
                       }}
                     />
