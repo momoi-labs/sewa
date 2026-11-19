@@ -221,8 +221,8 @@ export const roleQuery = (id: string) =>
     queryFn: () => api<Role>('GET', `/api/roles/${encodeURIComponent(id)}`),
   });
 
-export function createRole(name: string) {
-  return api<Role>('POST', '/api/roles', { name });
+export function createRole(name: string, items: Item[] = []) {
+  return api<Role>('POST', '/api/roles', { name, items });
 }
 
 export function saveRole(id: string, name: string, items: Item[]) {

@@ -479,6 +479,58 @@ fn plan_message(instance: Uuid, plan: Value) -> AgentToServer {
 }
 
 #[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
+async fn roles_are_created_with_their_items(pool: PgPool) {
+    let app = app(pool.clone());
+    let jq = json!({ "kind": "package", "name": "jq", "version": "latest", "os": null });
+    let node = json!({ "kind": "tool", "name": "node", "version": "22", "os": null });
+    let (status, role) = json_call(
+        &app,
+        ADMIN,
+        "POST",
+        "/api/roles",
+        Some(json!({ "name": "devtools", "items": [node, jq] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{role}");
+    assert_eq!(role["items"], json!([jq, node]));
+    let id = role["id"].as_str().unwrap();
+    let (status, read) = json_call(&app, ADMIN, "GET", &format!("/api/roles/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["items"], json!([jq, node]));
+    let data: Value = sqlx::query_scalar("SELECT data FROM events WHERE kind = 'role.created'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(data["items"], json!([jq, node]));
+
+    for (items, error) in [
+        (
+            json!([{ "kind": "tool", "name": "node", "version": "absent" }]),
+            "invalid_item",
+        ),
+        (json!([jq, jq]), "duplicate_item"),
+    ] {
+        let (status, body) = json_call(
+            &app,
+            ADMIN,
+            "POST",
+            "/api/roles",
+            Some(json!({ "name": "other", "items": items })),
+        )
+        .await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::BAD_REQUEST, json!({ "error": error }))
+        );
+    }
+    let roles: i64 = sqlx::query_scalar("SELECT count(*) FROM roles WHERE name = 'other'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(roles, 0);
+}
+
+#[sqlx::test(migrator = "sewa_controller::MIGRATOR")]
 async fn roles_save_directly_and_record_what_changed(pool: PgPool) {
     let app = app(pool.clone());
     let role = create_role(&app, "base").await;
