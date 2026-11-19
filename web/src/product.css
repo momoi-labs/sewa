@@ -154,6 +154,9 @@
 /* Kiso releases after 1.10.0 round a form's FormActions to the Card. */
 [data-slot="card"] > .form { border-radius: inherit; }
 
+.roles-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--spacing-xs); }
+.roles-list > li { min-block-size: var(--size-control-sm); align-items: center; }
+
 /* The Plans step of a sync, by package: a search and a host filter above
    one table per change, in the role page's table style. On a phone each
    row is a card. See Exceptions in docs/kiso.md. */
