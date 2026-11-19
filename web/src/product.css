@@ -148,6 +148,9 @@
   .item-table .table .item-manager::before { content: attr(data-label) ": "; }
 }
 
+[data-slot="card-content"]:has(> [data-slot="empty-state"]:only-child) { padding: 0; border-radius: inherit; }
+[data-slot="card-content"] > [data-slot="empty-state"]:only-child { border-radius: inherit; }
+
 /* The Plans step of a sync, by package: a search and a host filter above
    one table per change, in the role page's table style. On a phone each
    row is a card. See Exceptions in docs/kiso.md. */

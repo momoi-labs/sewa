@@ -33,7 +33,7 @@ const waiting: Host = {
 };
 
 describe('hosts', () => {
-  it('pulses the dot of a disconnected host only', async () => {
+  it('pulses no host dot', async () => {
     mockApi({
       'GET /api/hosts': {
         status: 200,
@@ -43,9 +43,24 @@ describe('hosts', () => {
     renderRoute('/');
     const dot = async (name: string) =>
       (await screen.findByRole('link', { name })).closest('tr')!.querySelector('[data-slot="dot"]')!;
-    expect(await dot('build-3')).toHaveClass('dot-pulse');
+    expect(await dot('build-3')).not.toHaveClass('dot-pulse');
     expect(await dot('build-1')).not.toHaveClass('dot-pulse');
-    expect(await dot('laptop')).not.toHaveClass('dot-pulse');
+  });
+
+  it('filters the hosts by name and status', async () => {
+    const user = userEvent.setup();
+    mockApi({ 'GET /api/hosts': { status: 200, body: [connected, waiting] } });
+    renderRoute('/');
+    expect(await screen.findByText('2 of 2 hosts')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'lap');
+    expect(screen.queryByRole('link', { name: 'build-1' })).not.toBeInTheDocument();
+    expect(screen.getByText('1 of 2 hosts')).toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'x');
+    expect(screen.getByText('No hosts match your filters.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(screen.getByRole('link', { name: 'build-1' })).toBeInTheDocument();
+    expect(screen.getByText('2 of 2 hosts')).toBeInTheDocument();
   });
 
   it('lists each host with its status, agent version and last report', async () => {
@@ -60,7 +75,7 @@ describe('hosts', () => {
     expect(within(other).getByRole('img', { name: 'The agent reports the OS when it connects' })).toBeInTheDocument();
     expect(within(other).getByText('Waiting')).toBeInTheDocument();
     expect(within(other).getByRole('img', { name: 'The agent has not reported yet' })).toBeInTheDocument();
-    expect(screen.getByText('2 hosts')).toBeInTheDocument();
+    expect(screen.getByText('2 of 2 hosts')).toBeInTheDocument();
   });
 
   it('offers to add the first host', async () => {
