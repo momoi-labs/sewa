@@ -13,6 +13,7 @@ import { NotFound } from './components/NotFound';
 import { Shell } from './components/Shell';
 import { HostPage } from './hosts/HostPage';
 import { HostsPage } from './hosts/HostsPage';
+import { NewRolePage } from './desired/NewRolePage';
 import { RolePage } from './desired/RolePage';
 import { RolesPage } from './desired/RolesPage';
 import { PasskeysPage } from './passkeys/PasskeysPage';
@@ -48,6 +49,8 @@ const hostRoute = createRoute({
 
 const rolesRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles', component: RolesPage });
 
+const newRoleRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles/new', component: NewRolePage });
+
 const roleRoute = createRoute({ getParentRoute: () => rootRoute, path: '/roles/$roleId', component: RolePage });
 
 const syncRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sync', component: SyncPage });
@@ -64,6 +67,7 @@ const routeTree = rootRoute.addChildren([
   hostsRoute,
   hostRoute,
   rolesRoute,
+  newRoleRoute,
   roleRoute,
   syncRoute,
   syncRunRoute,

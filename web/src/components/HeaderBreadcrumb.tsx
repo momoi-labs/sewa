@@ -35,7 +35,7 @@ export function HeaderBreadcrumb({ site }: { site: string }) {
   });
   const role = useQuery({
     ...roleQuery(id ?? ''),
-    enabled: first === 'roles' && !!id,
+    enabled: first === 'roles' && !!id && id !== 'new',
     throwOnError: false,
   });
   const run = useQuery({
@@ -56,7 +56,9 @@ export function HeaderBreadcrumb({ site }: { site: string }) {
     first === 'hosts'
       ? host.data?.name
       : first === 'roles'
-        ? role.data?.name
+        ? id === 'new'
+          ? 'New role'
+          : role.data?.name
         : run.data && formatDateTime(run.data.created_at);
 
   return (

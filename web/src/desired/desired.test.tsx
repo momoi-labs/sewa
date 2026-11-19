@@ -76,6 +76,31 @@ describe('roles', () => {
     expect(within(base).getByText('Linux and macOS')).toBeInTheDocument();
   });
 
+  it('creates a role with its items', async () => {
+    const user = userEvent.setup();
+    const created: Role = { ...role, id: '55555555-5555-4555-8555-555555555555', name: 'media', items: [], hosts: [] };
+    const calls = mockApi({
+      'GET /api/roles': { status: 200, body: [builtin, role] },
+      'POST /api/roles': { status: 201, body: created },
+      [`GET /api/roles/${created.id}`]: { status: 200, body: created },
+    });
+    renderRoute('/roles/new');
+    await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'media');
+    await user.type(screen.getByLabelText('Packages'), 'mpv{Enter}');
+    await user.type(screen.getByLabelText('Mise tools'), 'node{Enter}');
+    await user.click(screen.getByRole('button', { name: 'Create role' }));
+    await waitFor(() =>
+      expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+        name: 'media',
+        items: [
+          { kind: 'package', name: 'mpv', version: 'latest', os: null },
+          { kind: 'tool', name: 'node', version: 'latest', os: null },
+        ],
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'media' })).toBeInTheDocument();
+  });
+
   it('saves a role after it shows the diff', async () => {
     const user = userEvent.setup();
     const saved = { ...role, items: [...role.items, { kind: 'package', name: 'ripgrep', version: 'latest', os: null }] };
@@ -85,7 +110,7 @@ describe('roles', () => {
       [`PUT /api/roles/${role.id}`]: { status: 200, body: saved },
     });
     renderRoute(`/roles/${role.id}`);
-    await user.type(await screen.findByRole('combobox', { name: 'Add a package' }), 'ripgrep{Enter}');
+    await user.type(await screen.findByLabelText('Packages'), 'ripgrep{Enter}');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('dialog');
     const row = within(dialog).getByText('ripgrep').closest('tr')!;
@@ -99,31 +124,15 @@ describe('roles', () => {
 });
 
 describe('role items', () => {
-  it('filters the rows and groups them by source', async () => {
-    const user = userEvent.setup();
-    const many: Role = {
-      ...role,
-      items: [
-        { kind: 'package', name: 'git', version: 'latest', os: null },
-        { kind: 'package', name: 'brew:jq', version: '1.7', os: 'macos' },
-        { kind: 'package', name: 'brew:gnupg', version: 'latest', os: 'macos' },
-        { kind: 'package', name: 'aur:yay-bin', version: 'latest', os: 'linux' },
-        { kind: 'tool', name: 'node', version: '24', os: null },
-      ],
-    };
+  it('shows each item as a chip with its version and OS', async () => {
     mockApi({
-      [`GET /api/roles/${role.id}`]: { status: 200, body: many },
-      'GET /api/roles': { status: 200, body: [builtin, many] },
+      [`GET /api/roles/${role.id}`]: { status: 200, body: role },
+      'GET /api/roles': { status: 200, body: [builtin, role] },
     });
     renderRoute(`/roles/${role.id}`);
-    expect(await screen.findByRole('table', { name: 'Homebrew' })).toBeInTheDocument();
-    expect(screen.queryByRole('table', { name: 'Cask' })).toBeNull();
-    expect(screen.getByText('(2)')).toBeInTheDocument();
-    await user.type(screen.getByRole('searchbox', { name: 'Filter items' }), 'jq');
-    expect(screen.getByText('(1 of 2)')).toBeInTheDocument();
-    expect(screen.queryByRole('table', { name: 'mise tools' })).toBeNull();
-    expect(screen.getByRole('textbox', { name: 'Version of brew:jq' })).toHaveValue('1.7');
-    expect(screen.queryByRole('textbox', { name: 'Version of brew:gnupg' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Edit brew:jq version, currently 1.7' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit brew:jq OS, currently macos' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove git' })).toBeInTheDocument();
   });
 
   it('shows the built-in role with no edit controls', async () => {
