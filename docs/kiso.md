@@ -126,7 +126,7 @@ contract disagree, the contract wins and this file has a bug.
   record's name as `BreadcrumbPage`. It never wraps (`flex-wrap: nowrap`, the first and last item
   can shrink, the last one ellipsizes). Below 720 px only the current page
   shows, and the address stays next to the symbol in the phone header. There
-  the page name has a cap (the smaller of 8rem and 28vw, then it
+  the page name has a cap (the smaller of 7rem and 16vw, then it
   ellipsizes) and never shrinks below it, and the address shrinks first,
   down to the symbol. The "Theme" label is hidden there to leave room for the address. From
   720 px the address is in the breadcrumb only. At 1024 px and above the
