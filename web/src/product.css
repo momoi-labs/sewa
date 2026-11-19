@@ -58,7 +58,7 @@
 .page > [data-slot="breadcrumb"] { display: none; }
 @media (max-width: 719px) {
   .app-shell[data-shell-layout][data-phone-drawer] .topbar .app-shell-phone-brand { flex: 0 100 auto; min-width: var(--size-control-sm); }
-  .topbar [data-slot="breadcrumb"] { flex: 0 0 auto; max-inline-size: min(8rem, 28vw); }
+  .topbar [data-slot="breadcrumb"] { flex: 0 0 auto; max-inline-size: min(7rem, 16vw); }
   .topbar .theme-row .t-label { display: none; }
   .topbar [data-slot="breadcrumb"] > ol > li:not(:last-child) { display: none; }
 }
