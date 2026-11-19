@@ -10,13 +10,13 @@ import {
   KV,
   KVKey,
   KVValue,
-  Lifecycle,
   PageHeader,
   PageHeaderTitle,
   Skeleton,
   Table,
   TableBody,
   TableCell,
+  TableFrame,
   TableHead,
   TableHeader,
   TableRow,
@@ -36,7 +36,6 @@ import { Unknown } from '../components/Unknown';
 import { HostDesired, HostDrift } from '../desired/HostDesired';
 import { formatAgo, formatDateTime, formatReceived, osNames } from '../format';
 import { HostActions } from './HostActions';
-import { HostStatusBadge } from './HostStatusBadge';
 
 const route = getRouteApi('/hosts/$hostId');
 
@@ -53,12 +52,19 @@ export function HostPage() {
         <ErrorAlert error={host.error} onRetry={() => void host.refetch()} />
       ) : (
         <>
-          <div className="between">
-            <PageHeader actions={host.data && <HostActions host={host.data} />}>
-              <PageHeaderTitle>{host.data?.name ?? <Skeleton />}</PageHeaderTitle>
+          {host.data ? (
+            <HostActions host={host.data}>
+              <PageHeader>
+                <PageHeaderTitle>{host.data.name}</PageHeaderTitle>
+              </PageHeader>
+            </HostActions>
+          ) : (
+            <PageHeader>
+              <PageHeaderTitle>
+                <Skeleton />
+              </PageHeaderTitle>
             </PageHeader>
-            {host.data && <Lifecycle status={<HostStatusBadge status={host.data.status} />} />}
-          </div>
+          )}
           {host.isError && <ErrorAlert error={host.error} onRetry={() => void host.refetch()} />}
           {host.data?.status === 'disabled' && (
             <Alert variant="info">
@@ -71,7 +77,7 @@ export function HostPage() {
             </Alert>
           )}
           <Card className="detail-tabs">
-            <Tabs defaultValue="summary" data-shadow-style="none">
+            <Tabs defaultValue="summary" sections data-shadow-style="none">
               <TabsList aria-label="Host details">
                 <TabsTrigger value="summary">Summary</TabsTrigger>
                 <TabsTrigger value="desired">Desired state</TabsTrigger>
@@ -236,34 +242,36 @@ function Events({
     );
   }
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Time</TableHead>
-          <TableHead>Event</TableHead>
-          <TableHead>Kind</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {events ? (
-          events.map((event) => (
-            <TableRow key={event.id}>
-              <TableCell>
-                <Moment at={event.at} />
-              </TableCell>
-              <TableCell>
-                {describeEvent(event)}
-                {typeof event.data.received_at === 'string' && (
-                  <div className="muted">{formatReceived(event.data.received_at)}</div>
-                )}
-              </TableCell>
-              <TableCell className="mono muted">{event.kind}</TableCell>
-            </TableRow>
-          ))
-        ) : (
-          <SkeletonRows columns={3} />
-        )}
-      </TableBody>
-    </Table>
+    <TableFrame frame="none">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Time</TableHead>
+            <TableHead>Event</TableHead>
+            <TableHead>Kind</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {events ? (
+            events.map((event) => (
+              <TableRow key={event.id}>
+                <TableCell>
+                  <Moment at={event.at} />
+                </TableCell>
+                <TableCell>
+                  {describeEvent(event)}
+                  {typeof event.data.received_at === 'string' && (
+                    <div className="muted">{formatReceived(event.data.received_at)}</div>
+                  )}
+                </TableCell>
+                <TableCell className="mono muted">{event.kind}</TableCell>
+              </TableRow>
+            ))
+          ) : (
+            <SkeletonRows columns={3} />
+          )}
+        </TableBody>
+      </Table>
+    </TableFrame>
   );
 }
