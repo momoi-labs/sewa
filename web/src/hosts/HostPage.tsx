@@ -87,7 +87,7 @@ export function HostPage() {
               <TabsContent value="summary">
                 {host.data ? <Summary host={host.data} now={host.dataUpdatedAt} /> : <Skeleton />}
               </TabsContent>
-              <TabsContent value="desired">
+              <TabsContent value="desired" forceMount>
                 {state.isError && !state.data ? (
                   <ErrorAlert error={state.error} onRetry={() => void state.refetch()} />
                 ) : host.data && state.data ? (
